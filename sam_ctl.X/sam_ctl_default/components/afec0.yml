@@ -1,0 +1,172 @@
+configVersion: 1.0.0
+componentName: afec0
+coreVersion: 5.8.4
+device: ATSAMV71Q21B
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: afec0
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: csp
+  type: package
+  version: v3.23.0
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: afec0
+          x: '395'
+          y: '366'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols:
+    ADC_CALLBACK_API:
+      attributes:
+        id: ADC_CALLBACK_API
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC0_CallbackRegister
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_CH_PHASE_U:
+      attributes:
+        id: ADC_CH_PHASE_U
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC_CH0
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_CH_PHASE_V:
+      attributes:
+        id: ADC_CH_PHASE_V
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC_CH6
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_CH_POT:
+      attributes:
+        id: ADC_CH_POT
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC_CH10
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_CH_VDC_BUS:
+      attributes:
+        id: ADC_CH_VDC_BUS
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC_CH7
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_GET_RESULT_API:
+      attributes:
+        id: ADC_GET_RESULT_API
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC0_ChannelResultGet
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_IS_RESULT_READY_API:
+      attributes:
+        id: ADC_IS_RESULT_READY_API
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC0_ChannelResultIsReady
+          type: Dynamic
+        type: Values
+      type: String
+    ADC_START_CONV_API:
+      attributes:
+        id: ADC_START_CONV_API
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC0_ConversionStart
+          type: Dynamic
+        type: Values
+      type: String
+    AFEC_2_CHER:
+      attributes:
+        id: AFEC_2_CHER
+      children:
+      - children:
+        - attributes:
+            value: 'true'
+          type: User
+        type: Values
+      type: Boolean
+    AFEC_3_CHER:
+      attributes:
+        id: AFEC_3_CHER
+      children:
+      - children:
+        - attributes:
+            value: 'true'
+          type: User
+        type: Values
+      type: Boolean
+    AFEC_8_CHER:
+      attributes:
+        id: AFEC_8_CHER
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    AFEC_9_CHER:
+      attributes:
+        id: AFEC_9_CHER
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: 'false'
+          type: Dynamic
+        type: Values
+      type: Boolean
+    INTERRUPT_ADC_RESULT:
+      attributes:
+        id: INTERRUPT_ADC_RESULT
+      children:
+      - children:
+        - attributes:
+            id: afec0
+            value: AFEC0_IRQn
+          type: Dynamic
+        type: Values
+      type: String
+  userData: {}

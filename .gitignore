@@ -1,0 +1,24 @@
+# Build outputs
+_build/
+sam_ctl.X/build/
+sam_ctl.X/dist/
+
+# IDE-local and transient files
+sam_ctl.X/nbproject/private/
+sam_ctl.X/queuelogs/
+sam_ctl.X/MPLABXLog.xml*
+sam_ctl.X/defmplabxtrace.log*
+.vscode/
+
+# Object and binary artifacts
+*.o
+*.d
+*.elf
+*.hex
+*.map
+*.a
+*.out
+
+# OS files
+Thumbs.db
+Desktop.ini

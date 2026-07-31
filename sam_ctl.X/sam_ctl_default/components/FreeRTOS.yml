@@ -1,0 +1,35 @@
+configVersion: 1.0.0
+componentName: FreeRTOS
+coreVersion: 5.8.4
+device: ATSAMV71Q21B
+library: []
+dependency:
+- dependencyPackage: class com.microchip.mcc.harmony.HarmonyModule
+  name: FreeRTOS
+  type: module
+  version: ''
+- dependencyPackage: ''
+  name: CMSIS-FreeRTOS
+  type: package
+  version: v10.5.1
+- dependencyPackage: ''
+  name: core
+  type: package
+  version: v3.13.1
+customDataClassName: com.microchip.utils_mh3.utils.persistence.CustomModuleData
+data:
+  attachments: {}
+  elementPosition:
+    attributes:
+      id: __ROOTVIEW
+    children:
+    - children:
+      - attributes:
+          id: FreeRTOS
+          x: '385'
+          y: '21'
+        type: ElementPosition
+      type: ElementPositions
+    type: ComponentGraph
+  symbols: {}
+  userData: {}
