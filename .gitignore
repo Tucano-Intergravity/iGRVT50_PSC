@@ -6,6 +6,7 @@ sam_ctl.X/dist/
 # IDE-local and transient files
 sam_ctl.X/nbproject/private/
 sam_ctl.X/queuelogs/
+sam_ctl.X/.generated_files/flags/
 sam_ctl.X/MPLABXLog.xml*
 sam_ctl.X/defmplabxtrace.log*
 .vscode/
@@ -18,6 +19,8 @@ sam_ctl.X/defmplabxtrace.log*
 *.map
 *.a
 *.out
+*.pyc
+__pycache__/
 
 # OS files
 Thumbs.db

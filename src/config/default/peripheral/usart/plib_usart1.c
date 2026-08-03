@@ -42,6 +42,17 @@
 #include "plib_usart1.h"
 #include "interrupts.h"
 
+bool __attribute__((weak)) USART1_UartCommRxReadyHook( void )
+{
+    return false;
+}
+
+bool __attribute__((weak)) USART1_UartCommErrorHook( uint32_t errorStatus )
+{
+    (void)errorStatus;
+    return false;
+}
+
 // *****************************************************************************
 // *****************************************************************************
 // Section: USART1 Implementation
@@ -176,31 +187,37 @@ void __attribute__((used)) USART1_InterruptHandler( void )
 
     if(errorStatus != 0U)
     {
-        /* Save the error to be reported later */
-        usart1Obj.errorStatus = (USART_ERROR)errorStatus;
-
-        /* Clear error flags and flush the error data */
-        USART1_ErrorClear();
-
-        /* Disable Read, Overrun, Parity and Framing error interrupts */
-        USART1_REGS->US_IDR = (US_IDR_USART_RXRDY_Msk | US_IDR_USART_FRAME_Msk | US_IDR_USART_PARE_Msk | US_IDR_USART_OVRE_Msk);
-
-        usart1Obj.rxBusyStatus = false;
-
-        /* USART errors are normally associated with the receiver, hence calling
-         * receiver callback */
-        if( usart1Obj.rxCallback != NULL )
+        if( USART1_UartCommErrorHook( errorStatus ) == false )
         {
-            uintptr_t rxContext = usart1Obj.rxContext;
+            /* Save the error to be reported later */
+            usart1Obj.errorStatus = (USART_ERROR)errorStatus;
 
-            usart1Obj.rxCallback(rxContext);
+            /* Clear error flags and flush the error data */
+            USART1_ErrorClear();
+
+            /* Disable Read, Overrun, Parity and Framing error interrupts */
+            USART1_REGS->US_IDR = (US_IDR_USART_RXRDY_Msk | US_IDR_USART_FRAME_Msk | US_IDR_USART_PARE_Msk | US_IDR_USART_OVRE_Msk);
+
+            usart1Obj.rxBusyStatus = false;
+
+            /* USART errors are normally associated with the receiver, hence calling
+             * receiver callback */
+            if( usart1Obj.rxCallback != NULL )
+            {
+                uintptr_t rxContext = usart1Obj.rxContext;
+
+                usart1Obj.rxCallback(rxContext);
+            }
         }
     }
 
     /* Receiver status */
     if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
     {
-        USART1_ISR_RX_Handler();
+        if( USART1_UartCommRxReadyHook() == false )
+        {
+            USART1_ISR_RX_Handler();
+        }
     }
 
     /* Transmitter status */

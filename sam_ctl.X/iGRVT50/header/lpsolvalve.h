@@ -3,7 +3,7 @@
 
 #include "sam_ctl.h"
 
-#define LPSOLVALVE_CHANNEL_COUNT    1U
+#define LPSOLVALVE_CHANNEL_COUNT    12U
 #define LPSOLVALVE_SV1              1U
 
 void LpSolValve_Init( void );

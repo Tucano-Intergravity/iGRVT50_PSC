@@ -91,6 +91,14 @@
           </logicalFolder>
         </logicalFolder>
       </logicalFolder>
+      <logicalFolder name="iGRVT50_header" displayName="iGRVT50" projectFiles="true">
+        <logicalFolder name="header" displayName="header" projectFiles="true">
+          <itemPath>iGRVT50/header/hpsolvalve.h</itemPath>
+          <itemPath>iGRVT50/header/lpsolvalve.h</itemPath>
+          <itemPath>iGRVT50/header/sensor.h</itemPath>
+          <itemPath>iGRVT50/header/uartcomm.h</itemPath>
+        </logicalFolder>
+      </logicalFolder>
       <logicalFolder name="packs" displayName="packs" projectFiles="true">
         <logicalFolder name="ATSAMV71Q21B_DFP"
                        displayName="ATSAMV71Q21B_DFP"
@@ -215,13 +223,6 @@
               </logicalFolder>
             </logicalFolder>
           </logicalFolder>
-        </logicalFolder>
-      </logicalFolder>
-      <logicalFolder name="iGRVT50_header" displayName="iGRVT50" projectFiles="true">
-        <logicalFolder name="header" displayName="header" projectFiles="true">
-          <itemPath>iGRVT50/header/hpsolvalve.h</itemPath>
-          <itemPath>iGRVT50/header/lpsolvalve.h</itemPath>
-          <itemPath>iGRVT50/header/sensor.h</itemPath>
         </logicalFolder>
       </logicalFolder>
       <itemPath>../src/sam_ctl.h</itemPath>
@@ -355,6 +356,7 @@
           <itemPath>iGRVT50/source/hpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/lpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/sensor.c</itemPath>
+          <itemPath>iGRVT50/source/uartcomm.c</itemPath>
         </logicalFolder>
       </logicalFolder>
       <itemPath>../src/main.c</itemPath>

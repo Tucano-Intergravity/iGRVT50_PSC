@@ -31,6 +31,7 @@
 #include "sensor.h"
 #include "lpsolvalve.h"
 #include "hpsolvalve.h"
+#include "uartcomm.h"
 
 /*==============================================================================
  * Gloabal Variables
@@ -44,7 +45,6 @@ static TaskHandle_t xAdcTask;		// ADC task handler
  * Gloabal Function
  *============================================================================*/
 void OpuTask( void *pvParameters );
-void USART1_ReadCallback(uintptr_t context);
 /*==============================================================================
  * Local Variables
  *============================================================================*/
@@ -66,22 +66,22 @@ static float s_presGain = 1.4338f;
 void  OpuSetPresGain( float g ) { if( (g>0.1f) && (g<3.0f) ) { s_presGain = g; } }
 float OpuGetPresGain( void )    { return s_presGain; }
 
-#define LPV01_AUTO_TEST_ENABLE      0U
-#define LPV01_AUTO_TEST_DELAY_MS    3000UL
-#define SV01_AUTO_TEST_POLL_MS      50UL
 #define LPV01_GPIO_PA0_MASK         (1UL << 0)    /* LP_Valve01 = PA0 / PWM0_PWMH0 */
 #define LPV01_RTN_PD12_MASK         (1UL << 12)   /* LP_Valve_CTRL_ALL = PD12 / TPD2017_KILL_ALL */
-
-#define MAX_RB_IDX 100
-#define RX_BUF_SIZE  MAX_RB_DATA
-/* [수정] RS422 수신: 16B 한 프레임 다 채워야 콜백 뜨던 문제 -> 1B 단위 즉시 수신.
- * (plib 콜백은 요청크기 다 받아야 발생 + 타임아웃 없음. 1로 두면 바이트마다 처리) */
-#define RX_READ_SIZE 1U
-static uint8_t rxBuf[RX_BUF_SIZE];
-
-/* 링버퍼 */
-sRingBufInfo stUartRbRx;                // RS422 RX Ring Buffer 정보
-UInt8 ucUartRbRx[MAX_RB_IDX][RX_BUF_SIZE];		// network RX 링버퍼
+#define TCMD_PACKET_HEADER          "$iGRVT50"
+#define TCMD_COMMAND_SVCON          "SVCON"
+#define TCMD_COMMAND_TMREQ          "TMREQ"
+#define TCMD_COMMAND_DIAG           "DIAG"
+#define TCMD_ACK_DATA               "Ack"
+#define TCMD_RX_LINE_SIZE           512U
+#define TCMD_TMREQ_FIELD_COUNT      2U
+#define TCMD_DIAG_FIELD_COUNT       2U
+#define TCMD_SVCON_FIELD_COUNT      (2U + LPSOLVALVE_CHANNEL_COUNT + HPSOLVALVE_CHANNEL_COUNT)
+#define TCMD_MAX_FIELD_COUNT        TCMD_SVCON_FIELD_COUNT
+#define RS_TASK_RX_POLL_MS          1UL
+#define TC_TASK_PRIORITY            (tskIDLE_PRIORITY)
+#define ADC_TASK_PRIORITY           (tskIDLE_PRIORITY)
+#define RS_TASK_PRIORITY            (tskIDLE_PRIORITY + 3U)
 
 /*==============================================================================
  * Local Function
@@ -96,10 +96,12 @@ static void AdcPrint( UInt16 usCnt );
 
 /*-------- RS422 Processing --------*/
 static void RsTask(void *p);
-static SInt32 UartEnqueue( UInt32 *pBuf, sRingBufInfo *pRingBufInfo, UInt32 uiLen );
-static SInt32 UartDequeue( sRbData *pRbData, sRingBufInfo *pRingBufInfo );
-static void DdrRingBufferInit( sRingBufInfo *pRingBufInfo );
-static void RingBufferInit( void );
+static void RsTask_SendSensorPacket( void );
+static void RsTask_SendAckPacket( void );
+static void RsTask_SendDiagPacket( void );
+static void RsTask_ProcessRx( void );
+static void RsTask_ProcessTelecommandLine( char *line );
+static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState );
 static void TaskCreate( void );
 
 /*==============================================================================
@@ -270,6 +272,322 @@ static void AdcPrint( UInt16 usCnt )
 }
 
 
+static void RsTask_SendSensorPacket( void )
+{
+    sSensorScan stScan;
+    UInt32 uiPacketTick;
+    char cTxMsg[240];
+    int iTxLen;
+
+    Sensor_GetScan( &stScan );
+    uiPacketTick = (UInt32)xTaskGetTickCount();
+
+    iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
+                       "$iGRVT50,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+                       (unsigned long)uiPacketTick,
+                       (long)stScan.pt.adcMilliVolt[SENSOR_PT1_INDEX],
+                       (long)stScan.pt.adcMilliVolt[1U],
+                       (long)stScan.pt.adcMilliVolt[2U],
+                       (long)stScan.pt.adcMilliVolt[3U],
+                       (long)stScan.pt.adcMilliVolt[4U],
+                       (long)stScan.pt.adcMilliVolt[5U],
+                       (long)stScan.pt.adcMilliVolt[6U],
+                       (long)stScan.pt.adcMilliVolt[7U],
+                       (long)stScan.pt.adcMilliVolt[8U],
+                       (long)stScan.tc.microVolt[SENSOR_TC1_INDEX],
+                       (long)stScan.tc.microVolt[1U],
+                       (long)stScan.tc.microVolt[2U],
+                       (long)stScan.tc.microVolt[3U] );
+    if( iTxLen < 0 )
+    {
+        return;
+    }
+    if( iTxLen >= (int)sizeof(cTxMsg) )
+    {
+        iTxLen = (int)sizeof(cTxMsg) - 1;
+    }
+
+    UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
+}
+
+static void RsTask_SendAckPacket( void )
+{
+    UartComm_SendStringBlocking( TCMD_PACKET_HEADER "," TCMD_ACK_DATA "\r\n" );
+}
+
+static UInt8 RsTask_ParseBinaryField( const char *text, UInt8 *value )
+{
+    if( (text == NULL) || (value == NULL) )
+    {
+        return 0U;
+    }
+
+    if( ((text[0] == '0') || (text[0] == '1')) && (text[1] == '\0') )
+    {
+        *value = (UInt8)(text[0] - '0');
+        return 1U;
+    }
+
+    return 0U;
+}
+
+static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState )
+{
+    UInt8 i;
+
+    if( (lpvState == NULL) || (hpvState == NULL) )
+    {
+        return;
+    }
+
+    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        LpSolValve_Set( (UInt8)(i + 1U), lpvState[i] );
+    }
+
+    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        HpSolValve_Set( (UInt8)(i + 1U), hpvState[i] );
+    }
+}
+
+static char s_tcmdRxLine[TCMD_RX_LINE_SIZE];
+static UInt16 s_tcmdRxLen = 0U;
+static volatile UInt32 s_tcmdRxLineCount = 0U;
+static volatile UInt32 s_tcmdRxNoHeaderCount = 0U;
+static volatile UInt32 s_tcmdRxHeaderCount = 0U;
+static volatile UInt32 s_tcmdRxBadFieldCount = 0U;
+static volatile UInt32 s_tcmdRxBadBinaryCount = 0U;
+static volatile UInt32 s_tcmdRxUnknownCommandCount = 0U;
+static volatile UInt32 s_tcmdTmreqCount = 0U;
+static volatile UInt32 s_tcmdSvconCount = 0U;
+static volatile UInt32 s_tcmdDiagCount = 0U;
+static volatile UInt32 s_tcmdAckSentCount = 0U;
+static volatile UInt32 s_tcmdRxOverflowCount = 0U;
+static volatile UInt16 s_tcmdLastLineLen = 0U;
+static UInt16 s_tcmdRxSkipLen = 0U;
+
+static void RsTask_SendDiagPacket( void )
+{
+    UInt32 uiPacketTick;
+    char cTxMsg[320];
+    int iTxLen;
+
+    uiPacketTick = (UInt32)xTaskGetTickCount();
+    iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
+                       "$iGRVT50,DIAG,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u\r\n",
+                       (unsigned long)uiPacketTick,
+                       (unsigned long)UartComm_GetRxByteCount(),
+                       (unsigned long)UartComm_GetRxDropCount(),
+                       (unsigned long)UartComm_GetRxErrorCount(),
+                       (unsigned long)s_tcmdRxLineCount,
+                       (unsigned long)s_tcmdRxNoHeaderCount,
+                       (unsigned long)s_tcmdRxHeaderCount,
+                       (unsigned long)s_tcmdRxBadFieldCount,
+                       (unsigned long)s_tcmdRxBadBinaryCount,
+                       (unsigned long)s_tcmdRxUnknownCommandCount,
+                       (unsigned long)s_tcmdTmreqCount,
+                       (unsigned long)s_tcmdSvconCount,
+                       (unsigned long)s_tcmdAckSentCount,
+                       (unsigned long)s_tcmdRxOverflowCount,
+                       (unsigned)s_tcmdLastLineLen );
+    if( iTxLen < 0 )
+    {
+        return;
+    }
+    if( iTxLen >= (int)sizeof(cTxMsg) )
+    {
+        iTxLen = (int)sizeof(cTxMsg) - 1;
+    }
+
+    UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
+}
+
+static void RsTask_ProcessTelecommandLine( char *line )
+{
+    char *start;
+    char *next;
+    char *token;
+    char *fields[TCMD_MAX_FIELD_COUNT + 1U];
+    UInt8 fieldCount = 0U;
+    UInt8 lpvState[LPSOLVALVE_CHANNEL_COUNT];
+    UInt8 hpvState[HPSOLVALVE_CHANNEL_COUNT];
+    UInt8 i;
+
+    if( line == NULL )
+    {
+        return;
+    }
+
+    s_tcmdRxLineCount++;
+    s_tcmdLastLineLen = (UInt16)strlen( line );
+
+    start = strstr( line, TCMD_PACKET_HEADER );
+    if( start == NULL )
+    {
+        s_tcmdRxNoHeaderCount++;
+        return;
+    }
+    s_tcmdRxHeaderCount++;
+
+    while( (next = strstr( start + 1, TCMD_PACKET_HEADER )) != NULL )
+    {
+        start = next;
+    }
+
+    token = strtok( start, "," );
+    while( (token != NULL) && (fieldCount < (TCMD_MAX_FIELD_COUNT + 1U)) )
+    {
+        fields[fieldCount] = token;
+        fieldCount++;
+        token = strtok( NULL, "," );
+    }
+
+    if( fieldCount < TCMD_TMREQ_FIELD_COUNT )
+    {
+        s_tcmdRxBadFieldCount++;
+        return;
+    }
+
+    if( strcmp( fields[0], TCMD_PACKET_HEADER ) != 0 )
+    {
+        s_tcmdRxNoHeaderCount++;
+        return;
+    }
+
+    if( strcmp( fields[1], TCMD_COMMAND_TMREQ ) == 0 )
+    {
+        if( fieldCount == TCMD_TMREQ_FIELD_COUNT )
+        {
+            s_tcmdTmreqCount++;
+            RsTask_SendSensorPacket();
+        }
+        else
+        {
+            s_tcmdRxBadFieldCount++;
+        }
+        return;
+    }
+
+    if( strcmp( fields[1], TCMD_COMMAND_DIAG ) == 0 )
+    {
+        if( fieldCount == TCMD_DIAG_FIELD_COUNT )
+        {
+            s_tcmdDiagCount++;
+            RsTask_SendDiagPacket();
+        }
+        else
+        {
+            s_tcmdRxBadFieldCount++;
+        }
+        return;
+    }
+
+    if( strcmp( fields[1], TCMD_COMMAND_SVCON ) != 0 )
+    {
+        s_tcmdRxUnknownCommandCount++;
+        return;
+    }
+
+    if( fieldCount != TCMD_SVCON_FIELD_COUNT )
+    {
+        s_tcmdRxBadFieldCount++;
+        return;
+    }
+
+    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_ParseBinaryField( fields[2U + i], &lpvState[i] ) == 0U )
+        {
+            s_tcmdRxBadBinaryCount++;
+            return;
+        }
+    }
+
+    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_ParseBinaryField( fields[2U + LPSOLVALVE_CHANNEL_COUNT + i], &hpvState[i] ) == 0U )
+        {
+            s_tcmdRxBadBinaryCount++;
+            return;
+        }
+    }
+
+    s_tcmdSvconCount++;
+    s_tcmdAckSentCount++;
+    /* Ack means the SVCON packet was accepted, not that valve actuation is complete. */
+    RsTask_SendAckPacket();
+    RsTask_ApplyTelecommand( lpvState, hpvState );
+}
+
+static void RsTask_ProcessRx( void )
+{
+    sRbData rxData;
+    UInt32 i;
+
+    while( UartComm_Read( &rxData ) >= 0 )
+    {
+        for( i = 0U; i < rxData.usSize; i++ )
+        {
+            char ch = (char)rxData.ucData[i];
+
+            if( s_tcmdRxLen == 0U )
+            {
+                if( ch == '$' )
+                {
+                    s_tcmdRxLine[0] = ch;
+                    s_tcmdRxLen = 1U;
+                    s_tcmdRxSkipLen = 0U;
+                }
+                else if( ch == '\n' )
+                {
+                    if( s_tcmdRxSkipLen != 0U )
+                    {
+                        s_tcmdRxLineCount++;
+                        s_tcmdRxNoHeaderCount++;
+                        s_tcmdLastLineLen = s_tcmdRxSkipLen;
+                        s_tcmdRxSkipLen = 0U;
+                    }
+                }
+                else if( ch != '\r' )
+                {
+                    if( s_tcmdRxSkipLen < 0xFFFFU )
+                    {
+                        s_tcmdRxSkipLen++;
+                    }
+                }
+            }
+            else if( ch == '\n' )
+            {
+                s_tcmdRxLine[s_tcmdRxLen] = '\0';
+                RsTask_ProcessTelecommandLine( s_tcmdRxLine );
+                s_tcmdRxLen = 0U;
+                s_tcmdRxSkipLen = 0U;
+            }
+            else if( ch == '\r' )
+            {
+                /* Wait for LF. */
+            }
+            else if( ch == '$' )
+            {
+                s_tcmdRxLine[0] = ch;
+                s_tcmdRxLen = 1U;
+                s_tcmdRxSkipLen = 0U;
+            }
+            else if( s_tcmdRxLen < (TCMD_RX_LINE_SIZE - 1U) )
+            {
+                s_tcmdRxLine[s_tcmdRxLen] = ch;
+                s_tcmdRxLen++;
+            }
+            else
+            {
+                s_tcmdRxOverflowCount++;
+                s_tcmdRxLen = 0U;
+            }
+        }
+    }
+}
+
 /*-------- RS422 Processing --------*/
  /**
  * @fn RsTask
@@ -280,208 +598,17 @@ static void AdcPrint( UInt16 usCnt )
  */
 static void RsTask(void *p)
 {
-    const TickType_t xLpsvPeakTicks = pdMS_TO_TICKS( 100UL );
-    const TickType_t xLpsvHoldTicks = pdMS_TO_TICKS( 900UL );
-    char cTxMsg[160];
-    int iTxLen;
-    sRbData stRbData;
+    const TickType_t xPollTicks = pdMS_TO_TICKS( RS_TASK_RX_POLL_MS );
 
-    /* RS485-style test on USART1 (PA21 RXD1 / PB4 TXD1, PA22 DE, PA24 /RE) */
-    RS422_Init( 115200 );
-    USART1_Read( rxBuf, RX_READ_SIZE );
+    /* RS485-style telemetry/telecommand on USART1 (PA21 RXD1 / PB4 TXD1, PA22 DE, PA24 /RE) */
+    UartComm_Init( UARTCOMM_DEFAULT_BAUDRATE );
 
 	while(1)
 	{
-        TickType_t xLpsvCycleTick = xTaskGetTickCount();
-        sSensorPtScan stPtScan;
-        sSensorTcScan stTcScan;
-        UInt32 uiScanCount;
-
-        LpSolValve_SetDuty( LPSOLVALVE_SV1, 100U );
-        HpSolValve_Toggle( HPSOLVALVE_SV1 );
-        vTaskDelayUntil( &xLpsvCycleTick, xLpsvPeakTicks );
-        LpSolValve_SetDuty( LPSOLVALVE_SV1, 10U );
-
-        Sensor_GetPtScan( &stPtScan );
-        Sensor_GetTcScan( &stTcScan );
-        uiScanCount = Sensor_GetPtScanCount();
-
-        iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
-                           "SVTEST CNT=%lu PT1:%ldmV(%u) TC1:%lduV(%ld) LPSV1:100%%/100ms->10%%/900ms HPSV1:%s\r\n",
-                           (unsigned long)uiScanCount,
-                           (long)stPtScan.adcMilliVolt[0], (unsigned)stPtScan.rawAdc[0],
-                           (long)stTcScan.microVolt[0], (long)stTcScan.rawCode[0],
-                           (HpSolValve_IsOn( HPSOLVALVE_SV1 ) != 0U) ? "ON" : "OFF" );
-        if( iTxLen < 0 )
-        {
-            iTxLen = 0;
-        }
-        else if( iTxLen >= (int)sizeof(cTxMsg) )
-        {
-            iTxLen = (int)sizeof(cTxMsg) - 1;
-        }
-
-        RS485_SetTransmit( 1U );
-        while( USART1_WriteIsBusy() ) { }
-        if( iTxLen > 0 )
-        {
-            USART1_Write( cTxMsg, (size_t)iTxLen );
-        }
-        while( USART1_WriteIsBusy() ) { }
-        while( !USART1_TransmitComplete() ) { }
-        RS485_SetTransmit( 0U );
-
-        /* UART Dequeue: 밀린 데이터 전부 처리(1B 수신/버스트 대응) */
-        while( UartDequeue( &stRbData, &stUartRbRx ) >= 0 )
-        {
-            /* RS422 Loopback (uart 1=ON / uart 0=OFF) */
-            if( usRs422Loop == 1 )
-            {
-                RS485_SetTransmit( 1U );
-                while( USART1_WriteIsBusy() ) { }
-                USART1_Write( stRbData.ucData, stRbData.usSize );
-                while( USART1_WriteIsBusy() ) { }
-                while( !USART1_TransmitComplete() ) { }
-                RS485_SetTransmit( 0U );
-            }
-        }
-
-        vTaskDelayUntil( &xLpsvCycleTick, xLpsvHoldTicks );
+        RsTask_ProcessRx();
+        vTaskDelay( xPollTicks );
 	}
 }
-
-/**
- * @fn		UartEnqueue
- * @brief	DDR3 Ring Buffer write 함수
- * @param	UInt8 *pBuf : write 데이터 포인터
- * @param	sRingBufInfo *pRingBufInfo : Ring Buffer 정보
- * @return	Ring Buffer 상태 (-1: Ring buffer is full, 1 : Normal)
- * @date	2025/12/18
- */
-static SInt32 UartEnqueue( UInt32 *pBuf, sRingBufInfo *pRingBufInfo, UInt32 uiLen )
-{
-	SInt32 ucSts = 0;				// -1: Ring buffer is full, 1 : Normal
-	volatile UInt32 *pAddr = (volatile UInt32 *)pRingBufInfo->uiAddr;
-
-	if( pRingBufInfo->siCount == MAX_RB_IDX )
-	{
-		/* Ring buffer is full */
-		/* 가장오래된 데이터 삭제 */
-		pRingBufInfo->siFront = (pRingBufInfo->siFront+1)%MAX_RB_IDX;
-		pRingBufInfo->siCount--;
-		ucSts = -1;
-	}
-	else
-	{
-		/* BRAM to DDR3 write */
-		memcpy( &pAddr[pRingBufInfo->siRear*(RX_BUF_SIZE/4)+1], pBuf, (uiLen+(4-uiLen%4)) );
-		pAddr[pRingBufInfo->siRear*(RX_BUF_SIZE/4)] = uiLen;
-		pRingBufInfo->siRear = (pRingBufInfo->siRear+1)%MAX_RB_IDX;
-		pRingBufInfo->siCount++;
-	}
-
-	return ucSts;
-}
-
-
-/**
- * @fn		UartDequeue
- * @brief	DDR3 Ring Buffer Read 함수
- * @param	UInt8 *pBuf : Read 데이터 포인터
- * @param	sRingBufInfo *pRingBufInfo : Ring Buffer 정보
- * @return	Ring Buffer 상태 (-1: Ring buffer is Empty, 0~ : Message Count)
- * @date	2025/12/18
- */
-static SInt32 UartDequeue( sRbData *pRbData, sRingBufInfo *pRingBufInfo )
-{
-	SInt32 ucSts;																// -1: Ring buffer is Empty, 0~ : Message Count
-	volatile UInt8 *pAddr = (volatile UInt8 *)pRingBufInfo->uiAddr;
-
-	UInt32 *pData = (UInt32 *)pAddr+pRingBufInfo->siFront*(MAX_RB_DATA/4);		// 4byte 데이터 포인터
-
-	if( pRingBufInfo->siCount == 0 )
-	{
-		ucSts = -1;
-	}
-	else
-	{
-		/* 메시지 길이 확인 */
-
-		pRbData->usSize = *pData;
-
-		/* BRAM to DDR3 read */
-		memcpy( pRbData->ucData, &pAddr[pRingBufInfo->siFront*MAX_RB_DATA+4], pRbData->usSize );
-		pRingBufInfo->siFront = (pRingBufInfo->siFront+1)%MAX_RB_IDX;
-		pRingBufInfo->siCount--;
-
-		ucSts = pRingBufInfo->siCount;
-	}
-	return ucSts;
-}
-
-/**
- * @fn		USART1_ReadCallback
- * @brief	RS422(USART1) 수신 콜백 함수
- * @return	void
- * @date	2025/12/18
- */
-void USART1_ReadCallback(uintptr_t context)
-{
-    UInt16 scSts;
-    size_t rxCount;
-
-    if (USART1_ErrorGet() != USART_ERROR_NONE)
-    {
-        USART1_Read( rxBuf, RX_READ_SIZE );
-        return;
-    }
-
-    rxCount = USART1_ReadCountGet();
-
-    if ( rxCount > 0)
-    {
-        scSts = UartEnqueue( rxBuf, &stUartRbRx, rxCount );
-        if( scSts < 0 )
-        {
-            /* ring buffer is full */
-        }
-    }
-
-    USART1_Read( rxBuf, RX_READ_SIZE );
-}
-
-/**
- * @fn		DdrRingBufferInit
- * @brief	DDR3 Ring Buffer 초기화 함수
- * @param	sRingBufInfo *pRingBufInfo : Ring Buffer 정보
- * @return	void
- * @date	2023/02/03
- */
-static void DdrRingBufferInit( sRingBufInfo *pRingBufInfo )
-{
-	/* Ring Buffer 초기화 */
-	pRingBufInfo->siFront = 0;
-	pRingBufInfo->siRear = 0;
-	pRingBufInfo->siCount = 0;
-}
-
-
-/**
- * @fn RingBufferInit
- * @brief 링버퍼 초기화 함수
- * @param void
- * @return void
- * @date 2025-12-18
- */
-static void RingBufferInit( void )
-{
-	UInt32 i;
-
-	/* UART */
-	DdrRingBufferInit( &stUartRbRx );
-	stUartRbRx.uiAddr =  ucUartRbRx;
-}
-
 
 /**
  * @fn TaskCreate
@@ -493,13 +620,13 @@ static void RingBufferInit( void )
 static void TaskCreate( void )
 {
 	/* --- TC Task --- */
-	xTaskCreate( TcTask, "TcTask", SCDAU_STACK_SIZE, NULL, tskIDLE_PRIORITY, &xTcTask );
+	xTaskCreate( TcTask, "TcTask", SCDAU_STACK_SIZE, NULL, TC_TASK_PRIORITY, &xTcTask );
 
 	/* --- RS422 Task --- */
-	xTaskCreate( RsTask, "RsTask", SCDAU_STACK_SIZE, NULL, tskIDLE_PRIORITY, &xRsTask );
+	xTaskCreate( RsTask, "RsTask", SCDAU_STACK_SIZE, NULL, RS_TASK_PRIORITY, &xRsTask );
 
     /* --- RS422 Task --- */
-	xTaskCreate( AdcTask, "AdcTask", SCDAU_STACK_SIZE, NULL, tskIDLE_PRIORITY, &xAdcTask );
+	xTaskCreate( AdcTask, "AdcTask", SCDAU_STACK_SIZE, NULL, ADC_TASK_PRIORITY, &xAdcTask );
 }
 
 /*==============================================================================
@@ -899,197 +1026,6 @@ UInt16 DRV3946_ChCtrl( UInt8 ch1, UInt8 ch2 )
     return DRV3946_Cmd24( (UInt8)(((g_drvNode & 0x3U) << 6) | (0x1DU << 1)), cmd, &e );   /* CMD1 write, node=g_drvNode */
 }
 
-/* [HP/LP SV1 반복 구동] HP=node0/ch1 정전류 0.8A 목표, LP=Valve01 DMM 확인용 100% high 3s / low 3s.
- * I = (N+17)/272 * 3A @ R_IPROPI=20k -> N=56이면 약 0.805A.
- * PC/HC를 같은 값으로 설정해 peak 이후 hold도 동일 전류로 유지한다. */
-#define HPV_SV1_CYCLE_NODE              0U
-#define HPV_SV1_CYCLE_CHCTRL_CURRENT    0x2U
-#define HPV_SV1_CYCLE_REG_800MA         56U
-#define HPV_SV1_CYCLE_ON_MS             1000UL
-#define HPV_SV1_CYCLE_OFF_MS            1000UL
-#define LPV_SV1_PWM_PERIOD              750U
-#define LPV_SV1_HIGH_MS                 3000UL
-#define LPV_SV1_LOW_MS                  3000UL
-#define LPV_RTN_PD12_MASK               (1UL << 12)
-
-static volatile UInt8 s_hpvSv1CycleEnable = 0U;
-static volatile UInt8 s_hpvSv1CycleRestart = 0U;
-static UInt8 s_hpvSv1CycleOn = 0U;
-static UInt8 s_lpvSv1CycleOn = 0U;
-static TickType_t s_hpvSv1CycleTick = 0U;
-static TickType_t s_lpvSv1CycleTick = 0U;
-
-static void LpvSv1CyclePinPwm( void )
-{
-    PIOA_REGS->PIO_ABCDSR[0] &= ~LPV01_GPIO_PA0_MASK;  /* PA0 peripheral A = PWM0_PWMH0 */
-    PIOA_REGS->PIO_ABCDSR[1] &= ~LPV01_GPIO_PA0_MASK;
-    PIOA_REGS->PIO_PDR = LPV01_GPIO_PA0_MASK;
-}
-
-static void LpvSv1CyclePinOff( void )
-{
-    PIOA_REGS->PIO_PER  = LPV01_GPIO_PA0_MASK;
-    PIOA_REGS->PIO_OER  = LPV01_GPIO_PA0_MASK;
-    PIOA_REGS->PIO_CODR = LPV01_GPIO_PA0_MASK;
-}
-
-static void LpvSv1CycleSetRtnEnable( UInt8 ucEnable )
-{
-    PIOD_REGS->PIO_PER = LPV_RTN_PD12_MASK;
-    PIOD_REGS->PIO_OER = LPV_RTN_PD12_MASK;
-    if( ucEnable != 0U ) { PIOD_REGS->PIO_SODR = LPV_RTN_PD12_MASK; }  /* PD12 high = RTN enable */
-    else                 { PIOD_REGS->PIO_CODR = LPV_RTN_PD12_MASK; }  /* PD12 low = RTN off */
-}
-
-static void LpvSv1CycleSetOff( void )
-{
-    PWM0_ChannelsStop( PWM_CHANNEL_0_MASK );
-    PWM0_REGS->PWM_CH_NUM[0].PWM_CDTY = 0U;
-    LpvSv1CyclePinOff();
-    LpvSv1CycleSetRtnEnable( 0U );
-    s_lpvSv1CycleOn = 0U;
-}
-
-static void LpvSv1CycleSetOn( void )
-{
-    PWM0_REGS->PWM_CH_NUM[0].PWM_CPRD = LPV_SV1_PWM_PERIOD;
-    PWM0_REGS->PWM_CH_NUM[0].PWM_CDTY = 0U;      /* LPV1 H output: 100% high for DMM */
-    LpvSv1CycleSetRtnEnable( 1U );
-    LpvSv1CyclePinPwm();
-    PWM0_ChannelsStart( PWM_CHANNEL_0_MASK );
-    s_lpvSv1CycleOn = 1U;
-}
-
-static void HpvSv1CycleApplyConfig( void )
-{
-    UInt16 s0 = 0U;
-
-    g_drvNode = HPV_SV1_CYCLE_NODE;
-    g_drvPC[0] = HPV_SV1_CYCLE_REG_800MA;
-    g_drvHC[0] = HPV_SV1_CYCLE_REG_800MA;
-    (void)DRV3946_Wake( &s0 );
-}
-
-static void HpvSv1CycleSetOff( void )
-{
-    UInt8 e = 0U;
-
-    g_drvNode = HPV_SV1_CYCLE_NODE;
-    DRV3946Q1_EN1_Clear();
-    (void)DRV3946_ChCtrl( 0U, 0U );
-    (void)DRV3946_Read24( 0x01U, g_drvNode, &e );
-    s_hpvSv1CycleOn = 0U;
-}
-
-static void HpvSv1CycleSetOn( void )
-{
-    UInt8 e = 0U;
-    UInt16 s0;
-
-    g_drvNode = HPV_SV1_CYCLE_NODE;
-    s0 = DRV3946_Read24( 0x01U, g_drvNode, &e );
-    if( (s0 & 0x2000U) != 0U || s0 == 0xFFFFU )
-    {
-        HpvSv1CycleApplyConfig();
-    }
-
-    DRV3946Q1_EN1_OutputEnable();
-    DRV3946Q1_EN2_OutputEnable();
-    DRV3946Q1_KILL_ALL_OutputEnable();
-    DRV3946Q1_KILL_ALL_Set();
-    DRV3946Q1_EN2_Clear();
-    DRV3946Q1_EN1_Set();
-    (void)DRV3946_ChCtrl( HPV_SV1_CYCLE_CHCTRL_CURRENT, 0U );
-    (void)DRV3946_Read24( 0x01U, g_drvNode, &e );
-    s_hpvSv1CycleOn = 1U;
-}
-
-void HpvSv1CycleStart( void )
-{
-    s_hpvSv1CycleRestart = 1U;
-    s_hpvSv1CycleEnable = 1U;
-}
-
-void HpvSv1CycleStop( void )
-{
-    s_hpvSv1CycleEnable = 0U;
-    s_hpvSv1CycleRestart = 0U;
-    HpvSv1CycleSetOff();
-    LpvSv1CycleSetOff();
-}
-
-UInt8 HpvSv1CycleIsEnabled( void )
-{
-    return s_hpvSv1CycleEnable;
-}
-
-static void HpvSv1CycleService( void )
-{
-    const TickType_t xOnTicks = pdMS_TO_TICKS( HPV_SV1_CYCLE_ON_MS );
-    const TickType_t xOffTicks = pdMS_TO_TICKS( HPV_SV1_CYCLE_OFF_MS );
-    const TickType_t xLpvHighTicks = pdMS_TO_TICKS( LPV_SV1_HIGH_MS );
-    const TickType_t xLpvLowTicks = pdMS_TO_TICKS( LPV_SV1_LOW_MS );
-    TickType_t xNow = xTaskGetTickCount();
-
-    if( s_hpvSv1CycleEnable == 0U )
-    {
-        if( s_hpvSv1CycleOn != 0U )
-        {
-            HpvSv1CycleSetOff();
-        }
-        if( s_lpvSv1CycleOn != 0U )
-        {
-            LpvSv1CycleSetOff();
-        }
-        return;
-    }
-
-    if( s_hpvSv1CycleRestart != 0U )
-    {
-        s_hpvSv1CycleRestart = 0U;
-        HpvSv1CycleApplyConfig();
-        HpvSv1CycleSetOn();
-        LpvSv1CycleSetOn();
-        s_hpvSv1CycleTick = xNow;
-        s_lpvSv1CycleTick = xNow;
-        return;
-    }
-
-    if( s_hpvSv1CycleOn != 0U )
-    {
-        if( (xNow - s_hpvSv1CycleTick) >= xOnTicks )
-        {
-            HpvSv1CycleSetOff();
-            s_hpvSv1CycleTick = xNow;
-        }
-    }
-    else
-    {
-        if( (xNow - s_hpvSv1CycleTick) >= xOffTicks )
-        {
-            HpvSv1CycleSetOn();
-            s_hpvSv1CycleTick = xNow;
-        }
-    }
-
-    if( s_lpvSv1CycleOn != 0U )
-    {
-        if( (xNow - s_lpvSv1CycleTick) >= xLpvHighTicks )
-        {
-            LpvSv1CycleSetOff();
-            s_lpvSv1CycleTick = xNow;
-        }
-    }
-    else
-    {
-        if( (xNow - s_lpvSv1CycleTick) >= xLpvLowTicks )
-        {
-            LpvSv1CycleSetOn();
-            s_lpvSv1CycleTick = xNow;
-        }
-    }
-}
-
 /* 16-bit SPI 프레임 교환 (HW NPCS1 CS, 프레임마다 자동 해제) */
 UInt16 DRV3946_Xfer16( UInt16 uiOut )
 {
@@ -1115,10 +1051,16 @@ void EnterSafeState( void )
     DRV3946Q1_EN1_Clear();
     DRV3946Q1_EN2_Clear();
     DRV3946Q1_KILL_ALL_Clear();
-    LpvSv1CycleSetOff();
     /* Micro 밸브: PWM0 ch0~3, PWM1 ch0~1 정지 */
     PWM0_ChannelsStop( PWM_CHANNEL_0_MASK | PWM_CHANNEL_1_MASK | PWM_CHANNEL_2_MASK | PWM_CHANNEL_3_MASK );
     PWM1_ChannelsStop( PWM_CHANNEL_0_MASK | PWM_CHANNEL_1_MASK );
+    PWM0_REGS->PWM_CH_NUM[0].PWM_CDTY = 0U;
+    PIOA_REGS->PIO_PER  = LPV01_GPIO_PA0_MASK;
+    PIOA_REGS->PIO_OER  = LPV01_GPIO_PA0_MASK;
+    PIOA_REGS->PIO_CODR = LPV01_GPIO_PA0_MASK;
+    PIOD_REGS->PIO_PER  = LPV01_RTN_PD12_MASK;
+    PIOD_REGS->PIO_OER  = LPV01_RTN_PD12_MASK;
+    PIOD_REGS->PIO_CODR = LPV01_RTN_PD12_MASK;
     /* 히터(TC3): duty 0 */
     TC3_REGS->TC_CHANNEL[0].TC_RA = 0U;
     TC3_REGS->TC_CHANNEL[0].TC_RB = 0U;
@@ -1126,26 +1068,11 @@ void EnterSafeState( void )
 
 void OpuTask( void *pvParameters )
 {
-#if LPV01_AUTO_TEST_ENABLE
-    const TickType_t xLpv01TestDelay = pdMS_TO_TICKS( LPV01_AUTO_TEST_DELAY_MS );
-    const TickType_t xHpv01OnDelay = pdMS_TO_TICKS( HPV_SV1_CYCLE_ON_MS );
-    const TickType_t xHpv01OffDelay = pdMS_TO_TICKS( HPV_SV1_CYCLE_OFF_MS );
-    const TickType_t xAutoTestPollDelay = pdMS_TO_TICKS( SV01_AUTO_TEST_POLL_MS );
-    TickType_t xNow;
-    TickType_t xLpv01Tick;
-    TickType_t xHpv01Tick;
-    UInt8 ucLpv01On = 0U;
-    UInt8 ucHpv01On = 0U;
-#else
     const TickType_t x10ms = pdMS_TO_TICKS( DELAY_10_MSECOND );
 
     /* 메인 주기 카운트 */
 	UInt16 usMainCnt = 0;
-#endif
 	
-    /* 링버퍼 초기화 */
-	RingBufferInit();
-
     /* AFEC 추가 채널(SEN_P5V/SEN_VDD/AD6) 및 PC29/PC30/PC31 아날로그 전환
      * !! AdcTask 생성(TaskCreate) 전에 호출해야 CH6가 enable됨 (레이스 방지) */
     AFEC_Init();
@@ -1167,88 +1094,19 @@ void OpuTask( void *pvParameters )
     DRV3946Q1_KILL_ALL_Set();           // 출력 허용 (검증용)
 
     LpSolValve_Init();
+
+    /* Start RS485 RX before the slow HPV driver wake/config sequence. */
+    UartComm_Init( UARTCOMM_DEFAULT_BAUDRATE );
+
     HpSolValve_Init();
 
     /* Task 생성 */
 	TaskCreate();
 
-#if LPV01_AUTO_TEST_ENABLE
-    PWM0_ChannelsStop( PWM_CHANNEL_0_MASK );
-    PIOA_REGS->PIO_PER  = LPV01_GPIO_PA0_MASK;    /* PA0을 PWM peripheral에서 GPIO로 회수 */
-    PIOA_REGS->PIO_OER  = LPV01_GPIO_PA0_MASK;    /* GPIO output */
-    PIOA_REGS->PIO_CODR = LPV01_GPIO_PA0_MASK;    /* OFF 시작 */
-    PIOD_REGS->PIO_PER  = LPV01_RTN_PD12_MASK;    /* PD12 = LP_Valve_CTRL_ALL */
-    PIOD_REGS->PIO_OER  = LPV01_RTN_PD12_MASK;
-    PIOD_REGS->PIO_CODR = LPV01_RTN_PD12_MASK;    /* OFF 시작 */
-
-    HpvSv1CycleApplyConfig();                      /* HP_Valve01 = node0/ch1, 0.8A current-reg */
-    HpvSv1CycleSetOff();
-
-    xNow = xTaskGetTickCount();
-    xLpv01Tick = xNow;
-    xHpv01Tick = xNow;
-
-    PIOD_REGS->PIO_SODR = LPV01_RTN_PD12_MASK;    /* LSV0 RTN enable */
-    PIOA_REGS->PIO_SODR = LPV01_GPIO_PA0_MASK;    /* LSV0 High */
-    ucLpv01On = 1U;
-
-    HpvSv1CycleSetOn();                            /* HPV0 0.8A current-reg ON */
-    ucHpv01On = 1U;
-
-    while(1)
-    {
-        WDT_REGS->WDT_CR = WDT_CR_KEY_PASSWD | WDT_CR_WDRSTT_Msk;
-        xNow = xTaskGetTickCount();
-
-        if( ucHpv01On != 0U )
-        {
-            if( (xNow - xHpv01Tick) >= xHpv01OnDelay )
-            {
-                HpvSv1CycleSetOff();
-                ucHpv01On = 0U;
-                xHpv01Tick = xNow;
-            }
-        }
-        else
-        {
-            if( (xNow - xHpv01Tick) >= xHpv01OffDelay )
-            {
-                HpvSv1CycleSetOn();
-                ucHpv01On = 1U;
-                xHpv01Tick = xNow;
-            }
-        }
-
-        if( ucLpv01On != 0U )
-        {
-            if( (xNow - xLpv01Tick) >= xLpv01TestDelay )
-            {
-                PIOA_REGS->PIO_CODR = LPV01_GPIO_PA0_MASK;    /* LSV0 Low */
-                PIOD_REGS->PIO_CODR = LPV01_RTN_PD12_MASK;    /* LSV0 RTN off */
-                ucLpv01On = 0U;
-                xLpv01Tick = xNow;
-            }
-        }
-        else
-        {
-            if( (xNow - xLpv01Tick) >= xLpv01TestDelay )
-            {
-                PIOD_REGS->PIO_SODR = LPV01_RTN_PD12_MASK;    /* LSV0 RTN enable */
-                PIOA_REGS->PIO_SODR = LPV01_GPIO_PA0_MASK;    /* LSV0 High */
-                ucLpv01On = 1U;
-                xLpv01Tick = xNow;
-            }
-        }
-
-        vTaskDelay( xAutoTestPollDelay );
-    }
-#else
     while(1)
     {
         /* [안전] 워치독 refresh (16s 타임아웃, 본 루프 50ms 주기 -> 320x 여유) */
         WDT_REGS->WDT_CR = WDT_CR_KEY_PASSWD | WDT_CR_WDRSTT_Msk;
-
-        HpvSv1CycleService();
 
         /* TC 출력 */
         TcPrint( usMainCnt );
@@ -1265,6 +1123,5 @@ void OpuTask( void *pvParameters )
         }
     	vTaskDelay( (x10ms*5) );
     }
-#endif
     vTaskDelete( NULL );
 }

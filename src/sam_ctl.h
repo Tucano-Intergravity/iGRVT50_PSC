@@ -73,7 +73,6 @@ extern void AFEC1_SeqConvert( UInt32 chMask );
 /* --- RS422 (USART1) --- */
 extern void RS422_Init( UInt32 uiBaudRate );
 extern void RS485_SetTransmit( UInt8 ucEnable );
-extern void USART1_ReadCallback( uintptr_t context );
 
 /* --- 안전 --- */
 extern void EnterSafeState( void );    /* 모든 액추에이터 강제 OFF (폴트/리셋/명령) */
@@ -108,9 +107,6 @@ extern UInt16 DRV3946_Write24( UInt8 reg5, UInt16 data, UInt8 *echo );
 extern UInt16 DRV3946_Cmd24( UInt8 hdr, UInt8 cmd, UInt8 *echo );
 extern UInt16 DRV3946_Wake( UInt16 *pS0 );
 extern UInt16 DRV3946_ChCtrl( UInt8 ch1, UInt8 ch2 );
-extern void   HpvSv1CycleStart( void );
-extern void   HpvSv1CycleStop( void );
-extern UInt8  HpvSv1CycleIsEnabled( void );
 /*==============================================================================
  * Global Variables Define
  *============================================================================*/

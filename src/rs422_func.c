@@ -12,9 +12,10 @@
  * Include Files
  *============================================================================*/
 /* --- includes --- */
- #include <stddef.h>                     // Defines NULL
+#include <stddef.h>                     // Defines NULL
 #include <stdbool.h>                    // Defines true
 #include <stdlib.h>                     // Defines EXIT_FAILURE
+#include <stdint.h>
 #include "definitions.h"                // SYS function prototypes
 #include <math.h>
 
@@ -27,6 +28,7 @@
 
 /* --- User includes --- */
 #include "sam_ctl.h"
+#include "uartcomm.h"
 
 /*==============================================================================
  * Gloabal Variables
@@ -47,6 +49,7 @@
  * Local Function
  *============================================================================*/
 static void RS485_GpioInit( void );
+static void RS422_ApplyFractionalBaud( UInt32 uiBaudRate );
 
 /*==============================================================================
  * Functions
@@ -60,6 +63,36 @@ static void RS485_GpioInit( void )
     PIOA_REGS->PIO_PPDDR = RS485_DIR_MASK;
 
     RS485_SetTransmit( 0U );
+}
+
+static void RS422_ApplyFractionalBaud( UInt32 uiBaudRate )
+{
+    uint32_t srcClkFreq;
+    uint64_t divisor8;
+    uint32_t cd;
+    uint32_t fp;
+
+    if( uiBaudRate == 0U )
+    {
+        return;
+    }
+
+    srcClkFreq = USART1_FrequencyGet();
+    if( srcClkFreq < (16U * uiBaudRate) )
+    {
+        return;
+    }
+
+    divisor8 = ((uint64_t)srcClkFreq + (uint64_t)uiBaudRate) / ((uint64_t)uiBaudRate * 2ULL);
+    cd = (uint32_t)(divisor8 / 8ULL);
+    fp = (uint32_t)(divisor8 % 8ULL);
+
+    if( (cd == 0U) || (cd > 65535U) )
+    {
+        return;
+    }
+
+    USART1_REGS->US_BRGR = US_BRGR_CD( cd ) | US_BRGR_FP( fp );
 }
 
 void RS485_SetTransmit( UInt8 ucEnable )
@@ -85,7 +118,10 @@ void RS422_Init( UInt32 uiBaudRate )
     stSetup.stopBits  = USART_STOP_1_BIT;
 
     /* srcClkFreq=0 -> plib가 내부 클럭(USART1_FrequencyGet) 사용 */
-    USART1_SerialSetup( &stSetup, 0 );
+    if( USART1_SerialSetup( &stSetup, 0 ) != false )
+    {
+        RS422_ApplyFractionalBaud( uiBaudRate );
+    }
 
     USART1_ReadCallbackRegister( USART1_ReadCallback, 0 );
     RS485_GpioInit();

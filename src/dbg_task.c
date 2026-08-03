@@ -23,6 +23,7 @@
 #include <sys/time.h>		// 시간 관련 라이브러리
 
 #include "sam_ctl.h"
+#include "uartcomm.h"
 
 
 /*==============================================================================
@@ -34,7 +35,7 @@ void DbgTask( void *pvParameters );										// DBG Task
  * Gloabal Variables
  *============================================================================*/
 UInt16 usTcPrn;
-UInt16 usRs422Loop = 1U;   /* [수정] 브링업 검증용 기본 ON(에코). 운용 시 'uart 0'으로 끄기 */
+UInt16 usRs422Loop = 0U;   /* Default OFF for telemetry/telecommand monitoring. Use 'uart 1' only for echo tests. */
 UInt16 usAdcPrn;
 
 /*==============================================================================
@@ -461,7 +462,11 @@ static int testTcLogFunc(int argc, char *argv[])
 	UInt16 usDbgCmd;
 	if(argc<2)
 	{
-		printf("cmd err\r\n");
+		printf( "RS422 Loopback=%u RX bytes=%lu drops=%lu errors=%lu\r\n",
+		        (unsigned)usRs422Loop,
+		        (unsigned long)UartComm_GetRxByteCount(),
+		        (unsigned long)UartComm_GetRxDropCount(),
+		        (unsigned long)UartComm_GetRxErrorCount() );
 	}
 	else
 	{
@@ -1129,38 +1134,9 @@ static int testUartLogFunc(int argc, char *argv[])
 static int testLpvFunc(int argc, char *argv[])
 {
 	UInt8 ucCh;
-	if( argc >= 2 )
-	{
-		tohigh( argv[1] );
-		if( !strcmp(argv[1], "CYCLE") || !strcmp(argv[1], "CYC") )
-		{
-			if( argc < 3 )
-			{
-				printf( "HP+LP SV1 cycle = %s  (usage: lpv cycle on|off)\r\n",
-				        HpvSv1CycleIsEnabled() ? "ON" : "OFF" );
-				return(0);
-			}
-			tohigh( argv[2] );
-			if( !strcmp(argv[2], "ON") || !strcmp(argv[2], "START") || !strcmp(argv[2], "1") )
-			{
-				HpvSv1CycleStart();
-				printf( "HP+LP SV1 cycle START: HP current-reg 0.8A 1s ON/OFF, LP DMM test 3s HIGH / 3s LOW. stop: lpv cycle off\r\n" );
-			}
-			else if( !strcmp(argv[2], "OFF") || !strcmp(argv[2], "STOP") || !strcmp(argv[2], "0") )
-			{
-				HpvSv1CycleStop();
-				printf( "HP+LP SV1 cycle STOP: SV1 OFF\r\n" );
-			}
-			else
-			{
-				printf( "usage: lpv cycle on|off\r\n" );
-			}
-			return(0);
-		}
-	}
 	if( argc < 3 )
 	{
-		printf( "usage: lpv <1~12> <duty 0~100, 10%% step> | lpv cycle on|off  (1-4=PWM0,5-8=PWM1,9-12=TC0)\r\n" );
+		printf( "usage: lpv <1~12> <duty 0~100, 10%% step>  (1-4=PWM0,5-8=PWM1,9-12=TC0)\r\n" );
 		return(0);
 	}
 	ucCh  = (UInt8)atoi( argv[1] );
@@ -1220,20 +1196,12 @@ static int testHtrRegFunc(int argc, char *argv[])
  * 기본 0x55를 2000회 연속 송신 -> 스코프로 차동 파형/보레이트 확인 */
 static int testRs485Func(int argc, char *argv[])
 {
-	UInt32 i, n = 2000U;
+	UInt32 n = 2000U;
 	UInt8  b = 0x55U;
 	if( argc >= 2 ) n = (UInt32)atoi( argv[1] );
 	if( argc >= 3 ) b = (UInt8)htoi( argv[2] );
-	printf( "RS485 TX: 0x%02X x %lu @115200 ...\r\n", (unsigned)b, (unsigned long)n );
-	RS485_SetTransmit( 1U );
-	for( i = 0; i < n; i++ )
-	{
-		while( USART1_WriteIsBusy() ){}
-		USART1_Write( &b, 1 );
-	}
-	while( USART1_WriteIsBusy() ){}
-	while( !USART1_TransmitComplete() ){}
-	RS485_SetTransmit( 0U );
+	printf( "RS485 TX: 0x%02X x %lu @921600 ...\r\n", (unsigned)b, (unsigned long)n );
+	UartComm_SendByteRepeatBlocking( b, n );
 	printf( "RS485 TX done\r\n" );
 	return(0);
 }
@@ -1253,7 +1221,6 @@ static int testRs485Func(int argc, char *argv[])
 static int testSafeFunc(int argc, char *argv[])
 {
 	(void)argc; (void)argv;
-	HpvSv1CycleStop();
 	EnterSafeState();
 	printf( "SAFE STATE: HP(EN/KILL) off, micro PWM stop, heaters 0%%\r\n" );
 	return(0);
@@ -1303,7 +1270,6 @@ static int testOffFunc(int argc, char *argv[])
 	extern UInt8  g_drvNode;
 	UInt8 n;
 	(void)argc; (void)argv;
-	HpvSv1CycleStop();
 	/* HP: EN핀 글로벌 클리어(8밸브 즉시 off) + 전 노드 ChCtrl shutoff */
 	DRV3946Q1_EN1_Clear(); DRV3946Q1_EN2_Clear();
 	for( n = 0U; n < 4U; n++ ) { g_drvNode = n; (void)DRV3946_ChCtrl( 0U, 0U ); }
@@ -1347,33 +1313,6 @@ static int testHpvFunc(int argc, char *argv[])
 			printf( "HP%u ON (node%u ch%u, %s) nFAULT=%d  유지중 -> 끄기: off\r\n",
 			        (unsigned)vn, (unsigned)nd, (unsigned)ch,
 			        (cc==0x3U)?"Force100%/28V연속":"전류레귤 peak->hold", (int)DRV3946Q1_nFAULT_Get() );
-			return(0);
-		}
-
-		/* hpv cycle on/off : HP SV1 정전류 0.8A 1초 ON/OFF + LP SV1 DMM 확인용 3초 HIGH/LOW 반복 */
-		if( !strcmp(argv[1], "CYCLE") || !strcmp(argv[1], "CYC") )
-		{
-			if( argc < 3 )
-			{
-				printf( "HP SV1 cycle = %s  (usage: hpv cycle on|off)\r\n",
-				        HpvSv1CycleIsEnabled() ? "ON" : "OFF" );
-				return(0);
-			}
-			tohigh( argv[2] );
-			if( !strcmp(argv[2], "ON") || !strcmp(argv[2], "START") || !strcmp(argv[2], "1") )
-			{
-				HpvSv1CycleStart();
-				printf( "HP+LP SV1 cycle START: HP current-reg 0.8A 1s ON/OFF, LP DMM test 3s HIGH / 3s LOW. stop: hpv cycle off\r\n" );
-			}
-			else if( !strcmp(argv[2], "OFF") || !strcmp(argv[2], "STOP") || !strcmp(argv[2], "0") )
-			{
-				HpvSv1CycleStop();
-				printf( "HP+LP SV1 cycle STOP: SV1 OFF\r\n" );
-			}
-			else
-			{
-				printf( "usage: hpv cycle on|off\r\n" );
-			}
 			return(0);
 		}
 
@@ -1567,7 +1506,6 @@ static int testHpvFunc(int argc, char *argv[])
 			}
 			else
 			{
-				HpvSv1CycleStop();
 				(void)DRV3946_ChCtrl( 0U, 0U );                  /* 양채널 셧오프 */
 				DRV3946Q1_EN1_Clear(); DRV3946Q1_EN2_Clear();
 				printf( "HP all OFF (CMD1=shutoff + EN1/2=0)\r\n" );
@@ -2356,7 +2294,7 @@ static void UsrCmdList(void)
 	UsrCmdSet( "adc",  testAdcLogFunc,"AFEC analog log on/off",'N',"\0");
 	UsrCmdSet( "acal", testAcalFunc,  "28V 전류센스 보정: acal off(0A) / acal gain <A>(known I)",'N',"\0");
 	UsrCmdSet( "pcal", testPcalFunc,  "압력 게인 보정: 주입V 인가하고 pcal <V>",'N',"\0");
-    UsrCmdSet( "uart", testUartLogFunc,"RS422 USART1 loopback on/off",'N',"\0");
+    UsrCmdSet( "uart", testUartLogFunc,"RS422 USART1 status or loopback: uart [0|1]",'N',"\0");
     UsrCmdSet( "safe", testSafeFunc,  "EMERGENCY: all actuators OFF (HP/micro/heater)",'N',"\0");
     UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-F1/F2/O1/O2 (0.5~4.5V, %FS)",'N',"\0");
     UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TT-F1~F3/O1~O3 (K-type, degC)",'N',"\0");
