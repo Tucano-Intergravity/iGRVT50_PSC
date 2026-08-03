@@ -1,6 +1,6 @@
 # PSC Progress Memo
 
-Last updated: 2026-08-03 17:21 KST
+Last updated: 2026-08-03 17:23 KST
 
 Read this file first when resuming the PSC / iGRVT50 SAMV71 board test work.
 
@@ -10,7 +10,7 @@ Read this file first when resuming the PSC / iGRVT50 SAMV71 board test work.
 - MPLAB project: `C:\PSC\SAM_CTL_Control - IO\sam_ctl.X`
 - GitHub remote: `https://github.com/Tucano-Intergravity/iGRVT50_PSC.git`
 - Branch: `main`
-- Last pushed commit before latest local edits: `1fc6154` (`Initial commit: PSC control firmware test setup`)
+- Latest pushed work commit: `bad62b7` (`Add TMTC solenoid control and PSC UART tools`)
 
 ## Current Test Goal
 
