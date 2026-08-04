@@ -37,6 +37,7 @@
  *============================================================================*/
 void ADS1263_Init(void);            // ADS1263 디바이스 초기화 함수
 float ADS1263_GetTemperature( UInt8 ucCh );
+float ADS1263_GetTemperatureTask( UInt8 ucCh );
 
 /*==============================================================================
  * Local Variables
@@ -230,6 +231,10 @@ static void ADS1263_StartAdc( void );
 static void ADS1263_StopAdc( void );
 static int32_t ADS1263_ReadAdc( void );
 static void ADS1263_SetChannel(uint8_t ainp, uint8_t ainm);
+typedef void (*ADS1263_DelayFunc)( UInt32 delayMs );
+static void ADS1263_BusyDelayMs( UInt32 delayMs );
+static void ADS1263_TaskDelayMs( UInt32 delayMs );
+static float ADS1263_GetTemperatureWithDelay( UInt8 ucCh, ADS1263_DelayFunc delayFunc );
 
 static float ADC_CodeToVoltage(int32_t code);
 static float voltage_to_ntc_resistance( float v_ntc );
@@ -886,12 +891,50 @@ void ADS1263_Init(void)
     ADS1263_SetDevice( 1 );     /* 기본 디바이스 #1 */
 }
 
- float ADS1263_GetTemperature( UInt8 ucCh )
- {
+static void ADS1263_BusyDelayMs( UInt32 delayMs )
+{
+    SYSTICK_DelayMs( delayMs );
+}
+
+static void ADS1263_TaskDelayMs( UInt32 delayMs )
+{
+    TickType_t xDelayTicks;
+
+    if( delayMs == 0U )
+    {
+        return;
+    }
+
+    xDelayTicks = pdMS_TO_TICKS( delayMs );
+    if( xDelayTicks == 0U )
+    {
+        xDelayTicks = 1U;
+    }
+
+    vTaskDelay( xDelayTicks );
+}
+
+float ADS1263_GetTemperature( UInt8 ucCh )
+{
+    return ADS1263_GetTemperatureWithDelay( ucCh, ADS1263_BusyDelayMs );
+}
+
+float ADS1263_GetTemperatureTask( UInt8 ucCh )
+{
+    return ADS1263_GetTemperatureWithDelay( ucCh, ADS1263_TaskDelayMs );
+}
+
+static float ADS1263_GetTemperatureWithDelay( UInt8 ucCh, ADS1263_DelayFunc delayFunc )
+{
     int32_t adcCode;
     float cjTemp;
     float tcTemp;
     float retTemp = 0.0;
+
+    if( delayFunc == (ADS1263_DelayFunc)0 )
+    {
+        delayFunc = ADS1263_BusyDelayMs;
+    }
 
     /* VBIAS(floating TC 공통모드 레벨시프트) 반영 */
     tc_apply_power();
@@ -901,7 +944,7 @@ void ADS1263_Init(void)
     ADS1263_SetChannel(0x0B, 0x0B);             // INPMUX=0xBB 내부 온도센서
     ADS1263_WriteReg( ADS1263_MODE2, 0x0A );    // gain1
     ADS1263_StartAdc();                         // 계측 시작
-    SYSTICK_DelayMs(50);
+    delayFunc( 50U );
     adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
     cjTemp = 25.0f + ( ADC_CodeToVoltage(adcCode)*1.0e6f - 122400.0f ) / 420.0f;
 
@@ -912,7 +955,7 @@ void ADS1263_Init(void)
         s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 0 );
         ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
         ADS1263_StartAdc();
-        SYSTICK_DelayMs(50);
+        delayFunc( 50U );
         adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
         tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
         retTemp = tcTemp;
@@ -924,7 +967,7 @@ void ADS1263_Init(void)
         s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 2 );
         ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
         ADS1263_StartAdc();
-        SYSTICK_DelayMs(50);
+        delayFunc( 50U );
         adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
         tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
         retTemp = tcTemp;
@@ -936,7 +979,7 @@ void ADS1263_Init(void)
         s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 4 );
         ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
         ADS1263_StartAdc();
-        SYSTICK_DelayMs(50);
+        delayFunc( 50U );
         adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
         tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
         retTemp = tcTemp;
@@ -948,7 +991,7 @@ void ADS1263_Init(void)
         s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 6 );
         ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
         ADS1263_StartAdc();
-        SYSTICK_DelayMs(50);
+        delayFunc( 50U );
         adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
         tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
         retTemp = tcTemp;
@@ -968,4 +1011,4 @@ void ADS1263_Init(void)
     if( ucCh <= 4U ) { s_tcRawCode[(s_tcDev==2)?1:0][ucCh] = adcCode; }
 
     return retTemp;
- }
+}

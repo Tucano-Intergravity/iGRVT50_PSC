@@ -30,6 +30,8 @@ typedef signed long    		SInt32;         // 64비트 OS에서 64bits
 typedef unsigned long long  UInt64;
 typedef signed long long    SInt64;
 
+typedef void (*OpuTimerCallback)( void *context );
+
 /* --- Task Stack Size --- */
 #define SCDAU_STACK_SIZE 1024
 #define DYN_TEST_MAIN	0
@@ -47,6 +49,7 @@ typedef signed long long    SInt64;
 /* --- Main --- */
 extern void DbgTask( void *pvParameters );			// DbgTask 함수 선언
 extern void OpuTask( void *pvParameters );			// DbgTask 함수 선언
+extern UInt8 OpuTimer_RegisterCallback( UInt32 periodMs, OpuTimerCallback callback, void *context );
 
 /* --- Dbg_task --- */
 extern UInt16 usTimerLog;
@@ -56,6 +59,7 @@ extern UInt16 usTimerLog2;
 extern void ADS1263_Init(void);
 extern void ADS1263_SetDevice( UInt8 dev );                // Select device 1 or 2.
 extern float ADS1263_GetTemperature( UInt8 ucCh );
+extern float ADS1263_GetTemperatureTask( UInt8 ucCh );      // Task-context read; conversion waits use vTaskDelay.
 extern int32_t ADS1263_GetRawCode( UInt8 dev, UInt8 ch );  // Last raw ADC code by channel.
 extern UInt8 ADS1263_GetBypass( void );                    // 1=PGA bypass gain1, 0=PGA gain32.
 extern void  ADS1263_SetSpiMode( UInt8 m );                // 0=Mode0, 1=Mode1.

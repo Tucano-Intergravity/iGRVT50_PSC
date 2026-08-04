@@ -6,6 +6,8 @@
 #include <string.h>
 
 #include "definitions.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 #define UARTCOMM_RX_QUEUE_DEPTH     2048U
 #define UARTCOMM_RX_INT_MASK        (US_IER_USART_RXRDY_Msk | US_IER_USART_FRAME_Msk | US_IER_USART_PARE_Msk | US_IER_USART_OVRE_Msk)
@@ -19,6 +21,8 @@ static volatile UInt32 s_rxByteCount = 0U;
 static volatile UInt32 s_rxErrorCount = 0U;
 static volatile UInt8 s_rxIsrEnabled = 0U;
 static volatile UInt8 s_uartInitialized = 0U;
+static TaskHandle_t s_rxNotifyTask = NULL;
+static UInt32 s_rxNotifyValue = 0U;
 
 static void UartComm_ResetRxQueue( void )
 {
@@ -65,6 +69,16 @@ static void UartComm_EnqueueRxByte( UInt8 data )
     s_rxRear = (s_rxRear + 1U) % UARTCOMM_RX_QUEUE_DEPTH;
     s_rxCount++;
     s_rxByteCount++;
+}
+
+static void UartComm_NotifyRxReadyFromIsr( BaseType_t *pxHigherPriorityTaskWoken )
+{
+    TaskHandle_t notifyTask = s_rxNotifyTask;
+
+    if( notifyTask != NULL )
+    {
+        (void)xTaskNotifyFromISR( notifyTask, s_rxNotifyValue, eSetBits, pxHigherPriorityTaskWoken );
+    }
 }
 
 void UartComm_Init( UInt32 baudRate )
@@ -157,6 +171,14 @@ SInt32 UartComm_Read( sRbData *rxData )
     return (SInt32)remaining;
 }
 
+void UartComm_SetRxNotifyTask( TaskHandle_t task, UInt32 notifyValue )
+{
+    __disable_irq();
+    s_rxNotifyTask = task;
+    s_rxNotifyValue = notifyValue;
+    __enable_irq();
+}
+
 void UartComm_ServiceLoopback( UInt16 enable )
 {
     sRbData rxData;
@@ -192,6 +214,8 @@ UInt32 UartComm_GetRxErrorCount( void )
 
 bool USART1_UartCommRxReadyHook( void )
 {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
     if( s_rxIsrEnabled == 0U )
     {
         return false;
@@ -201,12 +225,16 @@ bool USART1_UartCommRxReadyHook( void )
     {
         UartComm_EnqueueRxByte( (UInt8)(USART1_REGS->US_RHR & US_RHR_RXCHR_Msk) );
     }
+    UartComm_NotifyRxReadyFromIsr( &xHigherPriorityTaskWoken );
+    portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
 
     return true;
 }
 
 bool USART1_UartCommErrorHook( uint32_t errorStatus )
 {
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
     if( s_rxIsrEnabled == 0U )
     {
         return false;
@@ -216,6 +244,8 @@ bool USART1_UartCommErrorHook( uint32_t errorStatus )
     s_rxErrorCount++;
     UartComm_FlushHardwareRx();
     USART1_REGS->US_IER = UARTCOMM_RX_INT_MASK;
+    UartComm_NotifyRxReadyFromIsr( &xHigherPriorityTaskWoken );
+    portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
 
     return true;
 }

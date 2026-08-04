@@ -40,6 +40,7 @@
 static TaskHandle_t xTcTask;		// TC task handler
 static TaskHandle_t xRsTask;		// RS task handler
 static TaskHandle_t xAdcTask;		// ADC task handler
+static TaskHandle_t xOpuTaskSelf;   // OPU task handler for timer notification
 
 /*==============================================================================
  * Gloabal Function
@@ -78,7 +79,15 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define TCMD_DIAG_FIELD_COUNT       2U
 #define TCMD_SVCON_FIELD_COUNT      (2U + LPSOLVALVE_CHANNEL_COUNT + HPSOLVALVE_CHANNEL_COUNT)
 #define TCMD_MAX_FIELD_COUNT        TCMD_SVCON_FIELD_COUNT
-#define RS_TASK_RX_POLL_MS          1UL
+#define TC_TASK_PERIOD_MS           1000UL
+#define ADC_TASK_PERIOD_MS          50UL
+#define OPU_TIMER_TICK_MS           10UL
+#define OPU_TIMER_MCK_HZ            (CPU_CLOCK_FREQUENCY / 2UL)
+#define OPU_TIMER_CLOCK_HZ          (OPU_TIMER_MCK_HZ / 128UL)
+#define OPU_TIMER_RC_COUNT          (((OPU_TIMER_CLOCK_HZ * OPU_TIMER_TICK_MS) + 500UL) / 1000UL)
+#define OPU_TIMER_CALLBACK_MAX      8U
+#define RSTASK_NOTIFY_RX_READY      (1UL << 0)
+#define RSTASK_NOTIFY_TM_EVENT      (1UL << 1)
 #define TC_TASK_PRIORITY            (tskIDLE_PRIORITY)
 #define ADC_TASK_PRIORITY           (tskIDLE_PRIORITY)
 #define RS_TASK_PRIORITY            (tskIDLE_PRIORITY + 3U)
@@ -88,11 +97,9 @@ float OpuGetPresGain( void )    { return s_presGain; }
  *============================================================================*/
 /*-------- TC Processing --------*/
 static void TcTask(void *p);
-static void TcPrint( UInt16 usCnt );
 
 /*-------- ADC Processing --------*/
 static void AdcTask(void *p);
-static void AdcPrint( UInt16 usCnt );
 
 /*-------- RS422 Processing --------*/
 static void RsTask(void *p);
@@ -102,6 +109,14 @@ static void RsTask_SendDiagPacket( void );
 static void RsTask_ProcessRx( void );
 static void RsTask_ProcessTelecommandLine( char *line );
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState );
+static void Opu_10msCallback( void *context );
+static void Opu_100msCallback( void *context );
+static void Opu_1000msCallback( void *context );
+static void OpuTimer_Init( void );
+static void OpuTimer_ClearCallbacks( void );
+static void OpuTimer_RegisterDefaultCallbacks( void );
+static UInt32 OpuTimer_MsToTicks( UInt32 periodMs );
+static void OpuTimer_ServiceCallbacks( UInt32 elapsedTicks );
 static void TaskCreate( void );
 
 /*==============================================================================
@@ -120,47 +135,24 @@ static void TaskCreate( void );
  */
 static void TcTask(void *p)
 {
-    const TickType_t x10ms = pdMS_TO_TICKS( DELAY_10_MSECOND );
+    const TickType_t xPeriodTicks = pdMS_TO_TICKS( TC_TASK_PERIOD_MS );
+    TickType_t xLastWakeTime;
+
     ADS1263_Init();
+    xLastWakeTime = xTaskGetTickCount();
 
 	while(1)
 	{
         /* [수정] ADS1263은 U3 1개만 실장. 이전 2칩(ADS#2/CS=PD28)은 펌웨어 가공 -> 제거. */
         ADS1263_SetDevice( 1 );
-        stTcTemp[0].fTempCh1 = ADS1263_GetTemperature( 0 );   /* AIN0/1 = TC_SEN1 */
-        stTcTemp[0].fTempCh2 = ADS1263_GetTemperature( 1 );   /* AIN2/3 = TC_SEN2 */
-        stTcTemp[0].fTempCh3 = ADS1263_GetTemperature( 2 );   /* AIN4/5 = TC_SEN3 */
-        stTcTemp[0].fTempCh4 = ADS1263_GetTemperature( 3 );   /* AIN6/7 = TC_SEN4 */
-        stTcTemp[0].fTempCJ  = ADS1263_GetTemperature( 4 );   /* 내부 die온도 = CJ */
-        vTaskDelay( (x10ms*50) );
+        stTcTemp[0].fTempCh1 = ADS1263_GetTemperatureTask( 0 );   /* AIN0/1 = TC_SEN1 */
+        stTcTemp[0].fTempCh2 = ADS1263_GetTemperatureTask( 1 );   /* AIN2/3 = TC_SEN2 */
+        stTcTemp[0].fTempCh3 = ADS1263_GetTemperatureTask( 2 );   /* AIN4/5 = TC_SEN3 */
+        stTcTemp[0].fTempCh4 = ADS1263_GetTemperatureTask( 3 );   /* AIN6/7 = TC_SEN4 */
+        stTcTemp[0].fTempCJ  = ADS1263_GetTemperatureTask( 4 );   /* 내부 die온도 = CJ */
+        vTaskDelayUntil( &xLastWakeTime, xPeriodTicks );
 	}
 }
-
-/**
- * @fn TcPrint
- * @brief TC 출력 함수
- * @param void
- * @return void
- * @date 2025-12-18
- */
-static void TcPrint( UInt16 usCnt )
-{
-    if( (usCnt%10) == 0 )
-    {
-        if( usTcPrn == 1 )
-        {
-            printf( "ADS#1 TC1:%0.2f TC2:%0.2f TC3:%0.2f TC4:%0.2f CJ:%0.2f\r\n",
-                stTcTemp[0].fTempCh1, stTcTemp[0].fTempCh2, stTcTemp[0].fTempCh3, stTcTemp[0].fTempCh4, stTcTemp[0].fTempCJ );
-            /* [진단] 채널별 raw ADC code (FFFFFFFF=SPI무응답). ADS1263은 U3 1개만 실장. */
-            printf( "  raw: %08lX %08lX %08lX %08lX CJ=%08lX\r\n",
-                (unsigned long)(uint32_t)ADS1263_GetRawCode(1,0), (unsigned long)(uint32_t)ADS1263_GetRawCode(1,1),
-                (unsigned long)(uint32_t)ADS1263_GetRawCode(1,2), (unsigned long)(uint32_t)ADS1263_GetRawCode(1,3),
-                (unsigned long)(uint32_t)ADS1263_GetRawCode(1,4) );
-        }
-    }
-
-}
-
 
 /*-------- ADC Processing --------*/
  /**
@@ -184,7 +176,9 @@ static UInt16 med5( UInt16 *a )
 
 static void AdcTask(void *p)
 {
-    const TickType_t x10ms = pdMS_TO_TICKS( DELAY_10_MSECOND );
+    const TickType_t xPeriodTicks = pdMS_TO_TICKS( ADC_TASK_PERIOD_MS );
+    TickType_t xLastWakeTime = xTaskGetTickCount();
+
     /* AFEC0: CH0,2,3,5,6,7,8,9 / AFEC1: CH2,3,4,5,6
      * Board test: physical PT1 responds on AFEC0 CH0 (PD30), not AFEC1 CH6 (PC31). */
     static const UInt8 ch0[8] = { 0U, 2U, 3U, 5U, 6U, 7U, 8U, 9U };
@@ -232,45 +226,9 @@ static void AdcTask(void *p)
         stAdcTemp.fSen5v      = AFEC_ToVoltage( r1[2] );        // CH4  PC29 SEN_P5V
         stAdcTemp.fSenVdd     = AFEC_ToVoltage( r1[3] );        // CH5  PC30 SEN_VDD
 
-        vTaskDelay( (x10ms*5) );
+        vTaskDelayUntil( &xLastWakeTime, xPeriodTicks );
 	}
 }
-
-/**
- * @fn AdcPrint
- * @brief ADC 출력 함수
- * @param void
- * @return void
- * @date 2025-12-18
- */
-static void AdcPrint( UInt16 usCnt )
-{
-    if( (usCnt%10) == 0 )
-    {
-        if( usAdcPrn == 1 )
-        {
-            /* [환산] 센스 핀전압 -> 실제 단위. 공칭 회로게인 + DMM 실측보정(2026-06-18). */
-            #define P28V_V_GAIN (8.61f)   /* 28V = 핀 x8.61 (공칭8.89=INA2.26x전단분배20.1, DMM보정 28.9->28.0V) */
-            #define P5V_GAIN    (1.905f)  /* 5V  = 핀 x1.905 (분배0.5->공칭x2.0, DMM보정 2.62->5.0V) */
-            #define RAIL5_TH    (4.0f)    /* 5V 존재 임계 */
-            #define VDD_TH      (2.7f)    /* VDD(3.3V) 존재 임계 */
-            float v28 = stAdcTemp.fP28vVsense * P28V_V_GAIN;
-            float v5  = stAdcTemp.fSen5v * P5V_GAIN;     /* 0.5 분배 복원 + DMM보정 */
-            float i28 = (stAdcTemp.fP28vIsense - s_isenseOffV) * s_isenseApv;  /* acal로 보정 */
-            if( i28 < 0.0f ) { i28 = 0.0f; }
-            printf( "PRES1:%0.2f PRES2:%0.2f PRES3:%0.2f PRES4:%0.2f PRES5:%0.2f PRES6:%0.2f PRES7:%0.2f PRES8:%0.2f PRES9:%0.2f V | 28V=%0.1fV I=%0.2fA(Iv=%0.2f) | 5V:%s(%0.2f) VDD:%s(%0.2f)\r\n",
-                stAdcTemp.fPres1, stAdcTemp.fPres2, stAdcTemp.fPres3, stAdcTemp.fPres4, stAdcTemp.fPres5,
-                stAdcTemp.fSp6, stAdcTemp.fSp7, stAdcTemp.fSp8, stAdcTemp.fSp9,
-                v28, i28, stAdcTemp.fP28vIsense,
-                (v5 >= RAIL5_TH)?"UP":"LO", v5,
-                (stAdcTemp.fSenVdd >= VDD_TH)?"UP":"LO", stAdcTemp.fSenVdd );
-                //stAdcTemp.fSen5v,
-                //stAdcTemp.fSenVdd );
-        }
-    }
-
-}
-
 
 static void RsTask_SendSensorPacket( void )
 {
@@ -366,6 +324,21 @@ static volatile UInt32 s_tcmdAckSentCount = 0U;
 static volatile UInt32 s_tcmdRxOverflowCount = 0U;
 static volatile UInt16 s_tcmdLastLineLen = 0U;
 static UInt16 s_tcmdRxSkipLen = 0U;
+static volatile UInt32 s_opuTimerTickCount = 0U;
+static volatile UInt32 s_opu10msCallbackCount = 0U;
+static volatile UInt32 s_opu100msCallbackCount = 0U;
+static volatile UInt32 s_opu1000msCallbackCount = 0U;
+
+typedef struct
+{
+    UInt8 used;
+    UInt32 periodTicks;
+    UInt32 elapsedTicks;
+    OpuTimerCallback callback;
+    void *context;
+} sOpuTimerCallbackEntry;
+
+static sOpuTimerCallbackEntry s_opuTimerCallbacks[OPU_TIMER_CALLBACK_MAX];
 
 static void RsTask_SendDiagPacket( void )
 {
@@ -598,16 +571,160 @@ static void RsTask_ProcessRx( void )
  */
 static void RsTask(void *p)
 {
-    const TickType_t xPollTicks = pdMS_TO_TICKS( RS_TASK_RX_POLL_MS );
+    UInt32 notifyValue;
 
     /* RS485-style telemetry/telecommand on USART1 (PA21 RXD1 / PB4 TXD1, PA22 DE, PA24 /RE) */
     UartComm_Init( UARTCOMM_DEFAULT_BAUDRATE );
+    UartComm_SetRxNotifyTask( xTaskGetCurrentTaskHandle(), RSTASK_NOTIFY_RX_READY );
 
 	while(1)
 	{
         RsTask_ProcessRx();
-        vTaskDelay( xPollTicks );
+        if( xTaskNotifyWait( 0U, 0xFFFFFFFFUL, &notifyValue, portMAX_DELAY ) == pdTRUE )
+        {
+            if( (notifyValue & RSTASK_NOTIFY_RX_READY) != 0U )
+            {
+                RsTask_ProcessRx();
+            }
+            if( (notifyValue & RSTASK_NOTIFY_TM_EVENT) != 0U )
+            {
+                RsTask_SendSensorPacket();
+            }
+        }
 	}
+}
+
+void __attribute__((used)) TC1_CH0_Handler( void )
+{
+    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+    UInt32 status = TC1_REGS->TC_CHANNEL[0].TC_SR;
+
+    if( (status & TC_SR_CPCS_Msk) != 0U )
+    {
+        s_opuTimerTickCount++;
+
+        if( xOpuTaskSelf != NULL )
+        {
+            (void)xTaskNotifyFromISR( xOpuTaskSelf, 0U, eIncrement, &xHigherPriorityTaskWoken );
+        }
+    }
+
+    portYIELD_FROM_ISR( xHigherPriorityTaskWoken );
+}
+
+static void OpuTimer_ClearCallbacks( void )
+{
+    UInt8 i;
+
+    for( i = 0U; i < OPU_TIMER_CALLBACK_MAX; i++ )
+    {
+        s_opuTimerCallbacks[i].used = 0U;
+        s_opuTimerCallbacks[i].periodTicks = 0U;
+        s_opuTimerCallbacks[i].elapsedTicks = 0U;
+        s_opuTimerCallbacks[i].callback = (OpuTimerCallback)0;
+        s_opuTimerCallbacks[i].context = (void *)0;
+    }
+}
+
+static UInt32 OpuTimer_MsToTicks( UInt32 periodMs )
+{
+    UInt32 ticks;
+
+    if( periodMs == 0U )
+    {
+        return 0U;
+    }
+
+    ticks = (periodMs + (OPU_TIMER_TICK_MS - 1U)) / OPU_TIMER_TICK_MS;
+    if( ticks == 0U )
+    {
+        ticks = 1U;
+    }
+
+    return ticks;
+}
+
+UInt8 OpuTimer_RegisterCallback( UInt32 periodMs, OpuTimerCallback callback, void *context )
+{
+    UInt8 i;
+    UInt32 periodTicks = OpuTimer_MsToTicks( periodMs );
+
+    if( (periodTicks == 0U) || (callback == (OpuTimerCallback)0) )
+    {
+        return 0U;
+    }
+
+    taskENTER_CRITICAL();
+    for( i = 0U; i < OPU_TIMER_CALLBACK_MAX; i++ )
+    {
+        if( s_opuTimerCallbacks[i].used == 0U )
+        {
+            s_opuTimerCallbacks[i].periodTicks = periodTicks;
+            s_opuTimerCallbacks[i].elapsedTicks = 0U;
+            s_opuTimerCallbacks[i].callback = callback;
+            s_opuTimerCallbacks[i].context = context;
+            s_opuTimerCallbacks[i].used = 1U;
+            taskEXIT_CRITICAL();
+            return 1U;
+        }
+    }
+    taskEXIT_CRITICAL();
+
+    return 0U;
+}
+
+static void OpuTimer_RegisterDefaultCallbacks( void )
+{
+    OpuTimer_ClearCallbacks();
+    (void)OpuTimer_RegisterCallback( 10U, Opu_10msCallback, (void *)0 );
+    (void)OpuTimer_RegisterCallback( 100U, Opu_100msCallback, (void *)0 );
+    (void)OpuTimer_RegisterCallback( 1000U, Opu_1000msCallback, (void *)0 );
+}
+
+static void OpuTimer_ServiceCallbacks( UInt32 elapsedTicks )
+{
+    UInt32 tick;
+    UInt8 i;
+
+    for( tick = 0U; tick < elapsedTicks; tick++ )
+    {
+        for( i = 0U; i < OPU_TIMER_CALLBACK_MAX; i++ )
+        {
+            if( s_opuTimerCallbacks[i].used == 0U )
+            {
+                continue;
+            }
+
+            s_opuTimerCallbacks[i].elapsedTicks++;
+            if( s_opuTimerCallbacks[i].elapsedTicks >= s_opuTimerCallbacks[i].periodTicks )
+            {
+                s_opuTimerCallbacks[i].elapsedTicks = 0U;
+                s_opuTimerCallbacks[i].callback( s_opuTimerCallbacks[i].context );
+            }
+        }
+    }
+}
+
+static void OpuTimer_Init( void )
+{
+    NVIC_DisableIRQ( TC1_CH0_IRQn );
+
+    PMC_REGS->PMC_PCER0 = (1UL << ID_TC1_CHANNEL0);
+    TC1_REGS->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKDIS_Msk;
+    TC1_REGS->TC_CHANNEL[0].TC_IDR = TC_IDR_Msk;
+    (void)TC1_REGS->TC_CHANNEL[0].TC_SR;
+
+    TC1_REGS->TC_CHANNEL[0].TC_CMR = TC_CMR_TCCLKS_TIMER_CLOCK4 |
+                                     TC_CMR_WAVE_Msk |
+                                     TC_CMR_WAVEFORM_WAVSEL_UP_RC;
+    TC1_REGS->TC_CHANNEL[0].TC_RC = OPU_TIMER_RC_COUNT;
+
+    NVIC_ClearPendingIRQ( TC1_CH0_IRQn );
+    NVIC_SetPriority( TC1_CH0_IRQn, 7 );
+    NVIC_EnableIRQ( TC1_CH0_IRQn );
+
+    TC1_REGS->TC_CHANNEL[0].TC_IER = TC_IER_CPCS_Msk;
+    TC1_REGS->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN_Msk | TC_CCR_SWTRG_Msk;
 }
 
 /**
@@ -1068,10 +1185,9 @@ void EnterSafeState( void )
 
 void OpuTask( void *pvParameters )
 {
-    const TickType_t x10ms = pdMS_TO_TICKS( DELAY_10_MSECOND );
+    UInt32 elapsedTicks;
 
-    /* 메인 주기 카운트 */
-	UInt16 usMainCnt = 0;
+    xOpuTaskSelf = xTaskGetCurrentTaskHandle();
 	
     /* AFEC 추가 채널(SEN_P5V/SEN_VDD/AD6) 및 PC29/PC30/PC31 아날로그 전환
      * !! AdcTask 생성(TaskCreate) 전에 호출해야 CH6가 enable됨 (레이스 방지) */
@@ -1102,26 +1218,40 @@ void OpuTask( void *pvParameters )
 
     /* Task 생성 */
 	TaskCreate();
+    UartComm_SetRxNotifyTask( xRsTask, RSTASK_NOTIFY_RX_READY );
+    OpuTimer_RegisterDefaultCallbacks();
+    OpuTimer_Init();
 
     while(1)
     {
-        /* [안전] 워치독 refresh (16s 타임아웃, 본 루프 50ms 주기 -> 320x 여유) */
-        WDT_REGS->WDT_CR = WDT_CR_KEY_PASSWD | WDT_CR_WDRSTT_Msk;
-
-        /* TC 출력 */
-        TcPrint( usMainCnt );
-
-        /* ADC 출력 */
-        AdcPrint( usMainCnt );
-
-        /* 메인 주기 관리 */
-        usMainCnt++;
-
-        if( usMainCnt == 50 )
+        elapsedTicks = ulTaskNotifyTake( pdTRUE, portMAX_DELAY );
+        if( elapsedTicks != 0U )
         {
-            usMainCnt = 0;
+            OpuTimer_ServiceCallbacks( elapsedTicks );
         }
-    	vTaskDelay( (x10ms*5) );
     }
     vTaskDelete( NULL );
+}
+
+
+static void Opu_10msCallback( void *context )
+{
+    (void)context;
+
+    s_opu10msCallbackCount++;
+    WDT_REGS->WDT_CR = WDT_CR_KEY_PASSWD | WDT_CR_WDRSTT_Msk;
+}
+
+static void Opu_100msCallback( void *context )
+{
+    (void)context;
+
+    s_opu100msCallbackCount++;
+}
+
+static void Opu_1000msCallback( void *context )
+{
+    (void)context;
+
+    s_opu1000msCallbackCount++;
 }

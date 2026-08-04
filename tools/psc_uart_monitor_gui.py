@@ -60,7 +60,6 @@ SERIAL_PORT_SETTLE_SEC = 0.2
 MAX_RX_BUFFER_SIZE = 4096
 COMMAND_RESPONSE_TIMEOUT_SEC = 0.1
 COMMAND_MAX_RETRIES = 5
-COMMAND_TX_PREAMBLE = "U" * 512
 
 
 @dataclass
@@ -83,7 +82,6 @@ class TxRequest:
     total_count: int
     repeat_count: int
     interval_sec: float
-    preamble: str = COMMAND_TX_PREAMBLE
     next_send_time: float = 0.0
 
 
@@ -181,8 +179,7 @@ class SerialReader(threading.Thread):
                     if request.next_send_time > now:
                         continue
 
-                    wire_text = f"{request.preamble}{request.text}"
-                    self._serial_port.write(wire_text.encode("ascii"))
+                    self._serial_port.write(request.text.encode("ascii"))
                     self._serial_port.flush()
                     if request.total_count > 1:
                         attempt = (request.total_count - request.repeat_count) + 1
