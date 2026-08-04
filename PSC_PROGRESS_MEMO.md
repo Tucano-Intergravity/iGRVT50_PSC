@@ -29,10 +29,11 @@ The firmware is configured for PSC board-level sensor telemetry and solenoid tel
 Telemetry packet sent in response to `TMREQ`:
 
 ```text
-$iGRVT50,<SystemTick>,<PT1 mV>,<PT2 mV>,<PT3 mV>,<PT4 mV>,<PT5 mV>,<PT6 mV>,<PT7 mV>,<PT8 mV>,<PT9 mV>,<TC1 uV>,<TC2 uV>,<TC3 uV>,<TC4 uV>\r\n
+$iGRVT50,<SystemTick>,<mode>,<PT1 mV>,<PT2 mV>,<PT3 mV>,<PT4 mV>,<PT5 mV>,<PT6 mV>,<PT7 mV>,<PT8 mV>,<PT9 mV>,<TC1 uV>,<TC2 uV>,<TC3 uV>,<TC4 uV>\r\n
 ```
 
 - `SystemTick` is the 32-bit FreeRTOS tick in milliseconds.
+- `mode` is one of: `init_mode`, `normal_mode`, `run_mode`, `diagnostic_mode`.
 - Tick range is `0..4294967295`, then wraps to `0`.
 - Wrap period is `2^32 ms`, about 49 days 17 hours 2 minutes 47.296 seconds.
 
@@ -44,6 +45,17 @@ $iGRVT50,TMREQ\r\n
 
 - No Ack.
 - Firmware sends one telemetry packet immediately.
+
+Mode request:
+
+```text
+$iGRVT50,MODE,<mode>\r\n
+```
+
+- Valid mode values: `0/init`, `1/normal`, `2/run`, `3/diagnostic`.
+- Full text forms are also accepted: `init_mode`, `normal_mode`, `run_mode`, `diagnostic_mode`.
+- Valid MODE command response is `$iGRVT50,Ack\r\n`.
+- The requested mode is applied by the 100 Hz state-machine event.
 
 Solenoid control:
 
@@ -77,9 +89,20 @@ Main runtime wiring is in `src/opu_task.c`.
 - USART1 RX bytes are captured in the USART1 RX interrupt into a ring buffer.
 - `UartComm_SetRxNotifyTask()` notifies `RsTask` when RX bytes arrive.
 - `RsTask` is notification-driven; it no longer polls UART every 1 ms.
-- `RsTask_ProcessTelecommandLine()` parses `TMREQ`, `SVCON`, and `DIAG`.
+- `RsTask_ProcessTelecommandLine()` parses `TMREQ`, `MODE`, `SVCON`, and `DIAG`.
 - RX parser ignores bytes before `$`, restarts on a new `$`, and recovers from partial/glued retry frames.
 - `RSTASK_NOTIFY_TM_EVENT` remains defined as a reserved internal event, but no default timer callback sends it.
+
+## State Machine
+
+- State machine files:
+  - `sam_ctl.X/iGRVT50/header/statemachine.h`
+  - `sam_ctl.X/iGRVT50/source/statemachine.c`
+- Modes are `init_mode`, `normal_mode`, `run_mode`, and `diagnostic_mode`.
+- `StateMachine_100HzEvent()` is called from the 10 ms OPU timer callback.
+- Boot starts at `init_mode`; current code requests `normal_mode` after init entry.
+- Add mode behavior inside `StateMachine_InitMode()`, `StateMachine_NormalMode()`, `StateMachine_RunMode()`, and `StateMachine_DiagnosticMode()`.
+- `StateMachine_GetModeName()` is only for display/TM text conversion.
 
 ## Timer Callback Structure
 
@@ -103,6 +126,7 @@ Default registered callbacks:
 - `10 ms`: increments `s_opu10msCallbackCount`, refreshes WDT.
 - `100 ms`: increments `s_opu100msCallbackCount`.
 - `1000 ms`: increments `s_opu1000msCallbackCount`.
+- The 10 ms callback also services LPV/HPV open-hold timing and runs the state-machine 100 Hz event.
 
 The old 100 ms callback debug output was removed:
 
@@ -125,6 +149,12 @@ The old 100 ms callback debug output was removed:
 - LPV module:
   - `sam_ctl.X/iGRVT50/header/lpsolvalve.h`
   - `sam_ctl.X/iGRVT50/source/lpsolvalve.c`
+- LPV open-hold behavior:
+  - OPEN: 20 ms nominal, 100% duty, about 28 V output with 28 V supply.
+  - HOLD: 10% duty.
+  - PWM frequency: LPV1-LPV8 = 20 kHz; LPV9-LPV12 via TC0 = about 19.99 kHz.
+  - LPV is voltage/duty control, not current regulation.
+  - Repeated ON while already OPEN/HOLD is a no-op, so it should not restart the open pulse.
 - HPV module:
   - `sam_ctl.X/iGRVT50/header/hpsolvalve.h`
   - `sam_ctl.X/iGRVT50/source/hpsolvalve.c`
@@ -135,6 +165,12 @@ The old 100 ms callback debug output was removed:
   - HPV7/8 = node3
   - Odd valves use DRV channel 1, even valves use DRV channel 2.
 - `HpSolValve_Init()` configures all four DRV3946 nodes at boot, then commands all channels OFF.
+- HPV open-hold behavior:
+  - OPEN: 20 ms nominal, DRV3946 force-duty mode, effectively 100% drive.
+  - With 28 V supply and 35 ohm coil, OPEN current is about 0.8 A.
+  - HOLD: DRV3946 current-regulation mode.
+  - Requested HOLD current is 100 mA, but current register clamps to minimum register 0, about 188 mA with the current code formula.
+  - With a 35 ohm coil, expected HOLD voltage is about 6.6 V.
 - Repeated identical HPV state requests are treated as no-op inside the HPV module, so repeated SVCON retries should not cause a close/open click.
 
 Important current-limit note:
@@ -166,11 +202,13 @@ Important current-limit note:
 - Double-click launcher: `C:\PSC\run_psc_uart_monitor_gui.bat`
 - Default UART settings: `921600 8N1`.
 - GUI parses `$iGRVT50` packets and displays PT1-PT9 in one row and TC1-TC4 in one row below PT.
+- GUI parses the telemetry `mode` field after `SystemTick`.
 - Sol Valve controls keep LPV1-LPV12 and HPV1-HPV8 checkboxes.
-- `Request TM`, `Send SVCON`, and `All Off` buttons are grouped in a `Commands` box.
+- GUI has a mode selector and `Send MODE`.
+- `Request TM`, `Send MODE`, `Send SVCON`, and `All Off` buttons are grouped in a `Commands` box.
 - GUI sends no artificial TX preamble now.
 - Command timeout is `0.1 s`.
-- `TMREQ` and `SVCON` automatically retry up to 5 times if no expected response arrives.
+- `TMREQ`, `MODE`, and `SVCON` automatically retry up to 5 times if no expected response arrives.
 
 ## Hardware Notes Captured So Far
 
@@ -196,7 +234,7 @@ C:\PSC\SAM_CTL_Control - IO\sam_ctl.X
 
 Last known result:
 
-- Build succeeded on 2026-08-04 after timer callback cleanup.
+- Build succeeded on 2026-08-04 after LPV PWM was set back to 20 kHz.
 - HEX: `C:\PSC\SAM_CTL_Control - IO\sam_ctl.X\dist\default\production\sam_ctl.X.production.hex`
 
 Known existing warnings:

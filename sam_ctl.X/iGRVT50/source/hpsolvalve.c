@@ -3,6 +3,7 @@
 #define HPSV_DRV_NODE_COUNT          4U
 #define HPSV_CH_PER_NODE             2U
 #define HPSV_CHCTRL_CURRENT_REG      0x2U
+#define HPSV_CHCTRL_FORCE_DUTY       0x3U
 #define HPSV_CURRENT_800MA_REG       56U
 #define HPSV_CURRENT_HOLD_MIN_REG    0U
 #define HPSV_DEFAULT_PEAK_MA         800U
@@ -11,9 +12,30 @@
 #define HPSV_CURRENT_SCALE_DEN       272UL
 #define HPSV_CURRENT_OFFSET_REG      17UL
 #define HPSV_CURRENT_REG_MAX         255UL
+#define HPSV_OPEN_HOLD_TICKS         2U
+
+typedef enum HpSolValveState {
+    HPSV_STATE_OFF = 0U,
+    HPSV_STATE_OPEN,
+    HPSV_STATE_HOLD
+} eHpSolValveState;
 
 static volatile UInt8 s_hpsvOn[HPSOLVALVE_CHANNEL_COUNT] = { 0U };
 static volatile UInt8 s_hpsvNodeConfigured[HPSV_DRV_NODE_COUNT] = { 0U };
+static volatile eHpSolValveState s_hpsvState[HPSOLVALVE_CHANNEL_COUNT] = { HPSV_STATE_OFF };
+static volatile UInt16 s_hpsvOpenTicks[HPSOLVALVE_CHANNEL_COUNT] = { 0U };
+static UInt8 s_hpsvRequestedPeakReg[HPSOLVALVE_CHANNEL_COUNT] = {
+    HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
+    HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
+    HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
+    HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG
+};
+static UInt8 s_hpsvRequestedHoldReg[HPSOLVALVE_CHANNEL_COUNT] = {
+    HPSV_CURRENT_HOLD_MIN_REG, HPSV_CURRENT_HOLD_MIN_REG,
+    HPSV_CURRENT_HOLD_MIN_REG, HPSV_CURRENT_HOLD_MIN_REG,
+    HPSV_CURRENT_HOLD_MIN_REG, HPSV_CURRENT_HOLD_MIN_REG,
+    HPSV_CURRENT_HOLD_MIN_REG, HPSV_CURRENT_HOLD_MIN_REG
+};
 static UInt8 s_hpsvPeakReg[HPSOLVALVE_CHANNEL_COUNT] = {
     HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
     HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
@@ -163,17 +185,46 @@ static void HpSolValve_ApplyNodeOutput( UInt8 node )
     }
 
     firstIdx = (UInt8)(node * HPSV_CH_PER_NODE);
-    ch1Ctrl = (s_hpsvOn[firstIdx] != 0U) ? HPSV_CHCTRL_CURRENT_REG : 0U;
-    ch2Ctrl = (s_hpsvOn[firstIdx + 1U] != 0U) ? HPSV_CHCTRL_CURRENT_REG : 0U;
+    if( s_hpsvOn[firstIdx] != 0U )
+    {
+        ch1Ctrl = (s_hpsvState[firstIdx] == HPSV_STATE_OPEN) ? HPSV_CHCTRL_FORCE_DUTY : HPSV_CHCTRL_CURRENT_REG;
+    }
+    else
+    {
+        ch1Ctrl = 0U;
+    }
+
+    if( s_hpsvOn[firstIdx + 1U] != 0U )
+    {
+        ch2Ctrl = (s_hpsvState[firstIdx + 1U] == HPSV_STATE_OPEN) ? HPSV_CHCTRL_FORCE_DUTY : HPSV_CHCTRL_CURRENT_REG;
+    }
+    else
+    {
+        ch2Ctrl = 0U;
+    }
 
     DRV3946_SetNode( node );
     (void)DRV3946_ChCtrl( ch1Ctrl, ch2Ctrl );
     (void)DRV3946_Read24( 0x01U, node, &echo );
 }
 
+static void HpSolValve_SetChannelCurrentRegs( UInt8 idx, UInt8 peakReg, UInt8 holdReg )
+{
+    UInt8 node;
+
+    node = HpSolValve_IndexToNode( idx );
+    if( (s_hpsvPeakReg[idx] != peakReg) || (s_hpsvHoldReg[idx] != holdReg) )
+    {
+        s_hpsvPeakReg[idx] = peakReg;
+        s_hpsvHoldReg[idx] = holdReg;
+        s_hpsvNodeConfigured[node] = 0U;
+    }
+}
+
 void HpSolValve_Init( void )
 {
     UInt8 node;
+    UInt8 idx;
 
     DRV3946Q1_EN1_OutputEnable();
     DRV3946Q1_EN2_OutputEnable();
@@ -184,8 +235,21 @@ void HpSolValve_Init( void )
 
     for( node = 0U; node < HPSV_DRV_NODE_COUNT; node++ )
     {
-        s_hpsvOn[node * HPSV_CH_PER_NODE] = 0U;
-        s_hpsvOn[(node * HPSV_CH_PER_NODE) + 1U] = 0U;
+        idx = (UInt8)(node * HPSV_CH_PER_NODE);
+        s_hpsvOn[idx] = 0U;
+        s_hpsvOn[idx + 1U] = 0U;
+        s_hpsvState[idx] = HPSV_STATE_OFF;
+        s_hpsvState[idx + 1U] = HPSV_STATE_OFF;
+        s_hpsvOpenTicks[idx] = 0U;
+        s_hpsvOpenTicks[idx + 1U] = 0U;
+        s_hpsvRequestedPeakReg[idx] = HPSV_CURRENT_800MA_REG;
+        s_hpsvRequestedPeakReg[idx + 1U] = HPSV_CURRENT_800MA_REG;
+        s_hpsvRequestedHoldReg[idx] = HPSV_CURRENT_HOLD_MIN_REG;
+        s_hpsvRequestedHoldReg[idx + 1U] = HPSV_CURRENT_HOLD_MIN_REG;
+        s_hpsvPeakReg[idx] = HPSV_CURRENT_800MA_REG;
+        s_hpsvPeakReg[idx + 1U] = HPSV_CURRENT_800MA_REG;
+        s_hpsvHoldReg[idx] = HPSV_CURRENT_HOLD_MIN_REG;
+        s_hpsvHoldReg[idx + 1U] = HPSV_CURRENT_HOLD_MIN_REG;
         s_hpsvNodeConfigured[node] = 0U;
         HpSolValve_ApplyNodeCurrentConfig( node );
         HpSolValve_ApplyNodeOutput( node );
@@ -218,6 +282,8 @@ void HpSolValve_Set( UInt8 ch, UInt8 on )
     }
 
     s_hpsvOn[idx] = 0U;
+    s_hpsvState[idx] = HPSV_STATE_OFF;
+    s_hpsvOpenTicks[idx] = 0U;
     HpSolValve_ApplyNodeOutput( node );
     HpSolValve_UpdateEnablePins();
 }
@@ -246,24 +312,60 @@ void HpSolValve_SetPeakHoldMilliAmp( UInt8 ch, UInt16 peakMilliAmp, UInt16 holdM
     holdReg = HpSolValve_MilliAmpToReg( holdMilliAmp );
 
     if( (s_hpsvOn[idx] != 0U) &&
-        (s_hpsvPeakReg[idx] == peakReg) &&
-        (s_hpsvHoldReg[idx] == holdReg) &&
+        (s_hpsvRequestedPeakReg[idx] == peakReg) &&
+        (s_hpsvRequestedHoldReg[idx] == holdReg) &&
         (s_hpsvNodeConfigured[node] != 0U) )
     {
         return;
     }
 
-    if( (s_hpsvPeakReg[idx] != peakReg) || (s_hpsvHoldReg[idx] != holdReg) )
-    {
-        s_hpsvPeakReg[idx] = peakReg;
-        s_hpsvHoldReg[idx] = holdReg;
-        s_hpsvNodeConfigured[node] = 0U;
-    }
+    s_hpsvRequestedPeakReg[idx] = peakReg;
+    s_hpsvRequestedHoldReg[idx] = holdReg;
+    HpSolValve_SetChannelCurrentRegs( idx, peakReg, holdReg );
 
     HpSolValve_EnsureNodeConfigured( node );
     s_hpsvOn[idx] = 1U;
+    s_hpsvState[idx] = HPSV_STATE_OPEN;
+    s_hpsvOpenTicks[idx] = HPSV_OPEN_HOLD_TICKS;
     HpSolValve_UpdateEnablePins();
     HpSolValve_ApplyNodeOutput( node );
+}
+
+void HpSolValve_Service10ms( void )
+{
+    UInt8 idx;
+    UInt8 node;
+    UInt8 nodeNeedsUpdate[HPSV_DRV_NODE_COUNT] = { 0U };
+
+    for( idx = 0U; idx < HPSOLVALVE_CHANNEL_COUNT; idx++ )
+    {
+        if( s_hpsvState[idx] != HPSV_STATE_OPEN )
+        {
+            continue;
+        }
+
+        if( s_hpsvOpenTicks[idx] != 0U )
+        {
+            s_hpsvOpenTicks[idx]--;
+        }
+
+        if( s_hpsvOpenTicks[idx] == 0U )
+        {
+            node = HpSolValve_IndexToNode( idx );
+            s_hpsvState[idx] = HPSV_STATE_HOLD;
+            nodeNeedsUpdate[node] = 1U;
+        }
+    }
+
+    for( node = 0U; node < HPSV_DRV_NODE_COUNT; node++ )
+    {
+        if( nodeNeedsUpdate[node] == 0U )
+        {
+            continue;
+        }
+
+        HpSolValve_ApplyNodeOutput( node );
+    }
 }
 
 void HpSolValve_Toggle( UInt8 ch )
@@ -303,7 +405,7 @@ UInt16 HpSolValve_GetConfiguredPeakMilliAmp( UInt8 ch )
 
     idx = HpSolValve_ChannelToIndex( ch );
 
-    return HpSolValve_RegToMilliAmp( s_hpsvPeakReg[idx] );
+    return HpSolValve_RegToMilliAmp( s_hpsvRequestedPeakReg[idx] );
 }
 
 UInt16 HpSolValve_GetConfiguredHoldMilliAmp( UInt8 ch )
@@ -317,5 +419,5 @@ UInt16 HpSolValve_GetConfiguredHoldMilliAmp( UInt8 ch )
 
     idx = HpSolValve_ChannelToIndex( ch );
 
-    return HpSolValve_RegToMilliAmp( s_hpsvHoldReg[idx] );
+    return HpSolValve_RegToMilliAmp( s_hpsvRequestedHoldReg[idx] );
 }

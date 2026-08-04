@@ -96,6 +96,7 @@
           <itemPath>iGRVT50/header/hpsolvalve.h</itemPath>
           <itemPath>iGRVT50/header/lpsolvalve.h</itemPath>
           <itemPath>iGRVT50/header/sensor.h</itemPath>
+          <itemPath>iGRVT50/header/statemachine.h</itemPath>
           <itemPath>iGRVT50/header/uartcomm.h</itemPath>
         </logicalFolder>
       </logicalFolder>
@@ -356,6 +357,7 @@
           <itemPath>iGRVT50/source/hpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/lpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/sensor.c</itemPath>
+          <itemPath>iGRVT50/source/statemachine.c</itemPath>
           <itemPath>iGRVT50/source/uartcomm.c</itemPath>
         </logicalFolder>
       </logicalFolder>

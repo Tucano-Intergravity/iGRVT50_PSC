@@ -9,6 +9,7 @@
 void LpSolValve_Init( void );
 void LpSolValve_Set( UInt8 ch, UInt8 on );
 void LpSolValve_SetDuty( UInt8 ch, UInt8 dutyPct );
+void LpSolValve_Service10ms( void );
 void LpSolValve_Toggle( UInt8 ch );
 UInt8 LpSolValve_IsOn( UInt8 ch );
 UInt8 LpSolValve_GetDuty( UInt8 ch );

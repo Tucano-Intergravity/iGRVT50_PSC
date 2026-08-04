@@ -3,7 +3,7 @@
 GUI UART monitor for PSC iGRVT50 sensor packets.
 
 Packet format:
-    $iGRVT50,<tick>,<PT1 mV>...<PT9 mV>,<TC1 uV>...<TC4 uV>\r\n
+    $iGRVT50,<tick>,<mode>,<PT1 mV>...<PT9 mV>,<TC1 uV>...<TC4 uV>\r\n
 """
 
 from __future__ import annotations
@@ -28,12 +28,13 @@ HEADER = "$iGRVT50"
 COMMAND_SVCON = "SVCON"
 COMMAND_TMREQ = "TMREQ"
 COMMAND_DIAG = "DIAG"
+COMMAND_MODE = "MODE"
 ACK_DATA = "Ack"
 PT_COUNT = 9
 TC_COUNT = 4
 LPV_COUNT = 12
 HPV_COUNT = 8
-EXPECTED_FIELD_COUNT = 1 + 1 + PT_COUNT + TC_COUNT
+EXPECTED_FIELD_COUNT = 1 + 1 + 1 + PT_COUNT + TC_COUNT
 SVCON_FIELD_COUNT = 1 + 1 + LPV_COUNT + HPV_COUNT
 ACK_FIELD_COUNT = 2
 DIAG_VALUE_NAMES = (
@@ -60,11 +61,13 @@ SERIAL_PORT_SETTLE_SEC = 0.2
 MAX_RX_BUFFER_SIZE = 4096
 COMMAND_RESPONSE_TIMEOUT_SEC = 0.1
 COMMAND_MAX_RETRIES = 5
+MODE_OPTIONS = ("init_mode", "normal_mode", "run_mode", "diagnostic_mode")
 
 
 @dataclass
 class SensorPacket:
     tick: int
+    mode: str
     pt_values: list[int]
     tc_values: list[int]
     raw_line: str
@@ -102,9 +105,12 @@ def parse_packet(line: str) -> SensorPacket:
         raise ValueError(f"header {fields[0]!r} != {HEADER!r}")
 
     tick = int(fields[1], 10)
-    pt_values = [int(value, 10) for value in fields[2 : 2 + PT_COUNT]]
-    tc_values = [int(value, 10) for value in fields[2 + PT_COUNT : 2 + PT_COUNT + TC_COUNT]]
-    return SensorPacket(tick=tick, pt_values=pt_values, tc_values=tc_values, raw_line=line)
+    mode = fields[2]
+    pt_start = 3
+    tc_start = pt_start + PT_COUNT
+    pt_values = [int(value, 10) for value in fields[pt_start:tc_start]]
+    tc_values = [int(value, 10) for value in fields[tc_start : tc_start + TC_COUNT]]
+    return SensorPacket(tick=tick, mode=mode, pt_values=pt_values, tc_values=tc_values, raw_line=line)
 
 
 def is_ack_packet(line: str) -> bool:
@@ -267,6 +273,8 @@ class PscUartMonitorApp(tk.Tk):
         self.port_var = tk.StringVar()
         self.baud_var = tk.StringVar(value=str(DEFAULT_BAUDRATE))
         self.status_var = tk.StringVar(value="Disconnected")
+        self.mode_var = tk.StringVar(value="normal_mode")
+        self.tm_mode_var = tk.StringVar(value="-")
         self.tick_var = tk.StringVar(value="-")
         self.packet_count_var = tk.StringVar(value="0")
         self.ignored_count_var = tk.StringVar(value="0")
@@ -317,17 +325,18 @@ class PscUartMonitorApp(tk.Tk):
 
         status = ttk.Frame(self)
         status.grid(row=1, column=0, padx=12, pady=6, sticky="ew")
-        for col in range(8):
+        for col in range(9):
             status.columnconfigure(col, weight=1)
 
         self._add_status_item(status, 0, "Status", self.status_var)
         self._add_status_item(status, 1, "Tick", self.tick_var)
-        self._add_status_item(status, 2, "Packets", self.packet_count_var)
-        self._add_status_item(status, 3, "Ignored", self.ignored_count_var)
-        self._add_status_item(status, 4, "Serial Err", self.serial_error_count_var)
-        self._add_status_item(status, 5, "Last Update", self.last_update_var)
-        self._add_status_item(status, 6, "Age", self.age_var)
-        self._add_status_item(status, 7, "Timeouts", self.tc_timeout_count_var)
+        self._add_status_item(status, 2, "Mode", self.tm_mode_var)
+        self._add_status_item(status, 3, "Packets", self.packet_count_var)
+        self._add_status_item(status, 4, "Ignored", self.ignored_count_var)
+        self._add_status_item(status, 5, "Serial Err", self.serial_error_count_var)
+        self._add_status_item(status, 6, "Last Update", self.last_update_var)
+        self._add_status_item(status, 7, "Age", self.age_var)
+        self._add_status_item(status, 8, "Timeouts", self.tc_timeout_count_var)
 
         values = ttk.Frame(self)
         values.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
@@ -373,9 +382,29 @@ class PscUartMonitorApp(tk.Tk):
         control_frame = ttk.LabelFrame(self, text="Commands")
         control_frame.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
         control_frame.columnconfigure(0, weight=1)
+        control_frame.columnconfigure(1, weight=1)
+
+        mode_frame = ttk.Frame(control_frame)
+        mode_frame.grid(row=0, column=0, padx=10, pady=10, sticky="w")
+        ttk.Label(mode_frame, text="Mode").grid(row=0, column=0, padx=(0, 6))
+        self.mode_combo = ttk.Combobox(
+            mode_frame,
+            textvariable=self.mode_var,
+            values=MODE_OPTIONS,
+            width=18,
+            state="readonly",
+        )
+        self.mode_combo.grid(row=0, column=1, padx=(0, 6))
+        self.send_mode_button = ttk.Button(
+            mode_frame,
+            text="Send MODE",
+            command=self.send_mode,
+            state="disabled",
+        )
+        self.send_mode_button.grid(row=0, column=2)
 
         command_buttons = ttk.Frame(control_frame)
-        command_buttons.grid(row=0, column=0, padx=10, pady=10, sticky="e")
+        command_buttons.grid(row=0, column=1, padx=10, pady=10, sticky="e")
         self.request_tm_button = ttk.Button(
             command_buttons,
             text="Request TM",
@@ -535,6 +564,13 @@ class PscUartMonitorApp(tk.Tk):
     def build_diag_packet(self) -> str:
         return f"{HEADER},{COMMAND_DIAG}\r\n"
 
+    def build_mode_packet(self) -> str:
+        mode = self.mode_var.get().strip()
+        if mode not in MODE_OPTIONS:
+            mode = "normal_mode"
+            self.mode_var.set(mode)
+        return f"{HEADER},{COMMAND_MODE},{mode}\r\n"
+
     def _has_pending_command(self) -> bool:
         return self.pending_command is not None
 
@@ -579,6 +615,9 @@ class PscUartMonitorApp(tk.Tk):
 
     def send_diag(self) -> None:
         self._start_pending_command(COMMAND_DIAG, self.build_diag_packet())
+
+    def send_mode(self) -> None:
+        self._start_pending_command(COMMAND_MODE, self.build_mode_packet())
 
     def send_all_off(self) -> None:
         for variable in self.lpv_cmd_vars:
@@ -636,6 +675,7 @@ class PscUartMonitorApp(tk.Tk):
         self.last_packet_time = time.monotonic()
 
         self.tick_var.set(str(packet.tick))
+        self.tm_mode_var.set(packet.mode)
         self.packet_count_var.set(str(self.packet_count))
         self.last_update_var.set(now.strftime("%H:%M:%S"))
 
@@ -658,7 +698,7 @@ class PscUartMonitorApp(tk.Tk):
             self._complete_pending_command("DIAG received")
 
     def _handle_ack(self, line: str) -> None:
-        if self.pending_command is not None and self.pending_command.command == COMMAND_SVCON:
+        if self.pending_command is not None and self.pending_command.command in (COMMAND_SVCON, COMMAND_MODE):
             self._log(f"RX {line}")
             self._complete_pending_command("Ack")
         else:
@@ -718,6 +758,8 @@ class PscUartMonitorApp(tk.Tk):
         self.request_diag_button.configure(state="normal" if command_ready else "disabled")
         self.send_command_button.configure(state="normal" if command_ready else "disabled")
         self.all_off_button.configure(state="normal" if command_ready else "disabled")
+        self.send_mode_button.configure(state="normal" if command_ready else "disabled")
+        self.mode_combo.configure(state="readonly" if not self._has_pending_command() else "disabled")
 
     def _set_status(self, text: str) -> None:
         self.status_var.set(text)

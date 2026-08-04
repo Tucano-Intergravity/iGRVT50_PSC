@@ -63,8 +63,11 @@ void PWM_SetPowerOff( void )
     PWM0_ChannelsStop(PWM_CHANNEL_0_MASK);
 }
 
-/* LP밸브 9~12 = TC0 (TIOA1=PA15=lpv9, TIOB1=PA16=lpv10, TIOA2=PA26=lpv11, TIOB2=PA27=lpv12) */
-#define LP_TC0_PERIOD  7500U
+/* LP valve PWM: 150 MHz MCK / 7500 = 20 kHz. */
+#define LP_PWM_CPRD    7500U
+
+/* LP valves 9~12 use TC0 with TIMER_CLOCK2: 18.75 MHz / 938 ~= 20 kHz. */
+#define LP_TC0_PERIOD  938U
 #define LPV_PA15_MASK  (1UL << 15)
 #define LPV_PA16_MASK  (1UL << 16)
 #define LPV_PA26_MASK  (1UL << 26)
@@ -79,19 +82,19 @@ void PWM_Init( void )
     /* LP밸브 PWM (lpv n 1=start, 0=stop). 채널 통일 + 데드타임 제거. duty 50%. */
     for( ucCh = 0; ucCh <= 3; ucCh++ )       /* PWM0 ch0~3 = lpv1~4 */
     {
-        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CMR  = PWM_CMR_CPRE_MCK | PWM_CMR_CALG_CENTER_ALIGNED
+        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CMR  = PWM_CMR_CPRE_MCK
                                              | PWM_CMR_CPOL_LOW_POLARITY | PWM_CMR_UPDS_UPDATE_AT_PERIOD
                                              | PWM_CMR_CES_SINGLE_EVENT;
-        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CPRD = 750U;
-        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CDTY = 375U;
+        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CPRD = LP_PWM_CPRD;
+        PWM0_REGS->PWM_CH_NUM[ucCh].PWM_CDTY = (LP_PWM_CPRD / 2U);
     }
     for( ucCh = 0; ucCh <= 3; ucCh++ )       /* [확장] PWM1 ch0~3 = lpv5~8 (기존 0~1 -> 0~3) */
     {
-        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CMR  = PWM_CMR_CPRE_MCK | PWM_CMR_CALG_CENTER_ALIGNED
+        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CMR  = PWM_CMR_CPRE_MCK
                                              | PWM_CMR_CPOL_LOW_POLARITY | PWM_CMR_UPDS_UPDATE_AT_PERIOD
                                              | PWM_CMR_CES_SINGLE_EVENT;
-        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CPRD = 750U;
-        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CDTY = 375U;
+        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CPRD = LP_PWM_CPRD;
+        PWM1_REGS->PWM_CH_NUM[ucCh].PWM_CDTY = (LP_PWM_CPRD / 2U);
     }
 
     /* [수정] lpv7=PA31(PWM1 PWMH2, periph D), lpv8=PA5(PWM1 PWML3, periph A) 핀을 PWM에 연결.
@@ -306,10 +309,10 @@ void LpValve_Set( UInt8 ucCh, UInt8 ucOn )
 /*==============================================================================
  * Micro 밸브 전압제어 (사양: Lee Co. micro valve, Open=Peak 28V, Hold 2.5V)
  *  - PWM 듀티로 코일 평균전압 제어: Peak≈100%(28V), Hold≈9%(2.5/28V)
- *  - ch 1~4 -> PWM0 ch0~3, ch 5~6 -> PWM1 ch0~1. CPRD=750.
+ *  - ch 1~4 -> PWM0 ch0~3, ch 5~6 -> PWM1 ch0~1. CPRD=150000.
  *  - pull-in 시간 경과 후 Hold로 전환 (호출측에서 시간 제어)
  *============================================================================*/
-#define MV_CPRD       750U
+#define MV_CPRD       LP_PWM_CPRD
 /* [수정] 출력 극성 반전: 실측상 ON(28V)시간 = (100-duty)% -> CDTY를 반전해서 정의.
  * duty%(28V 비율) -> CDTY = CPRD x (100-duty)/100. */
 #define MV_PEAK_CDTY  (0U)                              /* duty100%(28V full) -> cdty 0 */

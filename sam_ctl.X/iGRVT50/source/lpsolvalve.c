@@ -2,9 +2,22 @@
 
 #define LPSV1_PA0_MASK          (1UL << 0)
 #define LPSV_RTN_PD12_MASK      (1UL << 12)
-#define LPSV1_PWM_PERIOD        3750U
+#define LPSV1_PWM_PERIOD        7500U
+#define LPSV1_PWM_MODE          (PWM_CMR_CPRE_MCK | PWM_CMR_CPOL_LOW_POLARITY | \
+                                 PWM_CMR_UPDS_UPDATE_AT_PERIOD | PWM_CMR_CES_SINGLE_EVENT)
+#define LPSV_OPEN_DUTY_PCT      100U
+#define LPSV_HOLD_DUTY_PCT      10U
+#define LPSV_OPEN_HOLD_TICKS    2U
+
+typedef enum LpSolValveState {
+    LPSV_STATE_OFF = 0U,
+    LPSV_STATE_OPEN,
+    LPSV_STATE_HOLD
+} eLpSolValveState;
 
 static volatile UInt8 s_lpsvDutyPct[LPSOLVALVE_CHANNEL_COUNT] = { 0U };
+static volatile eLpSolValveState s_lpsvState[LPSOLVALVE_CHANNEL_COUNT] = { LPSV_STATE_OFF };
+static volatile UInt8 s_lpsvOpenTicks[LPSOLVALVE_CHANNEL_COUNT] = { 0U };
 
 static UInt8 LpSolValve_IsValidChannel( UInt8 ch )
 {
@@ -59,44 +72,12 @@ static void LpSolValve_UpdateReturnEnable( void )
     LpSolValve_SetReturnEnable( 0U );
 }
 
-void LpSolValve_Init( void )
-{
-    UInt8 ch;
-
-    for( ch = 1U; ch <= LPSOLVALVE_CHANNEL_COUNT; ch++ )
-    {
-        LpSolValve_Set( ch, 0U );
-    }
-}
-
-void LpSolValve_Set( UInt8 ch, UInt8 on )
-{
-    if( on != 0U )
-    {
-        LpSolValve_SetDuty( ch, 100U );
-    }
-    else
-    {
-        LpSolValve_SetDuty( ch, 0U );
-    }
-}
-
-void LpSolValve_SetDuty( UInt8 ch, UInt8 dutyPct )
+static void LpSolValve_ApplyDuty( UInt8 ch, UInt8 dutyPct )
 {
     UInt32 cdty;
     UInt8 idx;
 
-    if( LpSolValve_IsValidChannel( ch ) == 0U )
-    {
-        return;
-    }
-
     idx = (UInt8)(ch - 1U);
-
-    if( dutyPct > 100U )
-    {
-        dutyPct = 100U;
-    }
 
     if( ch != LPSOLVALVE_SV1 )
     {
@@ -116,6 +97,7 @@ void LpSolValve_SetDuty( UInt8 ch, UInt8 dutyPct )
 
     cdty = (LPSV1_PWM_PERIOD * (UInt32)(100U - dutyPct)) / 100U;
 
+    PWM0_REGS->PWM_CH_NUM[0].PWM_CMR = LPSV1_PWM_MODE;
     PWM0_REGS->PWM_CH_NUM[0].PWM_CPRD = LPSV1_PWM_PERIOD;
     PWM0_REGS->PWM_CH_NUM[0].PWM_CDTY = cdty;
     PWM0_REGS->PWM_CH_NUM[0].PWM_CDTYUPD = cdty;
@@ -124,6 +106,93 @@ void LpSolValve_SetDuty( UInt8 ch, UInt8 dutyPct )
     PWM0_ChannelsStart( PWM_CHANNEL_0_MASK );
 
     s_lpsvDutyPct[idx] = dutyPct;
+}
+
+void LpSolValve_Init( void )
+{
+    UInt8 ch;
+
+    for( ch = 1U; ch <= LPSOLVALVE_CHANNEL_COUNT; ch++ )
+    {
+        LpSolValve_Set( ch, 0U );
+    }
+}
+
+void LpSolValve_Set( UInt8 ch, UInt8 on )
+{
+    UInt8 idx;
+
+    if( LpSolValve_IsValidChannel( ch ) == 0U )
+    {
+        return;
+    }
+
+    idx = (UInt8)(ch - 1U);
+
+    if( on != 0U )
+    {
+        if( s_lpsvState[idx] != LPSV_STATE_OFF )
+        {
+            return;
+        }
+
+        s_lpsvState[idx] = LPSV_STATE_OPEN;
+        s_lpsvOpenTicks[idx] = LPSV_OPEN_HOLD_TICKS;
+        LpSolValve_ApplyDuty( ch, LPSV_OPEN_DUTY_PCT );
+    }
+    else
+    {
+        s_lpsvState[idx] = LPSV_STATE_OFF;
+        s_lpsvOpenTicks[idx] = 0U;
+        LpSolValve_ApplyDuty( ch, 0U );
+    }
+}
+
+void LpSolValve_SetDuty( UInt8 ch, UInt8 dutyPct )
+{
+    UInt8 idx;
+
+    if( LpSolValve_IsValidChannel( ch ) == 0U )
+    {
+        return;
+    }
+
+    idx = (UInt8)(ch - 1U);
+
+    if( dutyPct > 100U )
+    {
+        dutyPct = 100U;
+    }
+
+    s_lpsvState[idx] = (dutyPct == 0U) ? LPSV_STATE_OFF : LPSV_STATE_HOLD;
+    s_lpsvOpenTicks[idx] = 0U;
+    LpSolValve_ApplyDuty( ch, dutyPct );
+}
+
+void LpSolValve_Service10ms( void )
+{
+    UInt8 idx;
+    UInt8 ch;
+
+    for( idx = 0U; idx < LPSOLVALVE_CHANNEL_COUNT; idx++ )
+    {
+        if( s_lpsvState[idx] != LPSV_STATE_OPEN )
+        {
+            continue;
+        }
+
+        if( s_lpsvOpenTicks[idx] != 0U )
+        {
+            s_lpsvOpenTicks[idx]--;
+        }
+
+        if( s_lpsvOpenTicks[idx] == 0U )
+        {
+            s_lpsvState[idx] = LPSV_STATE_HOLD;
+            ch = (UInt8)(idx + 1U);
+            LpSolValve_ApplyDuty( ch, LPSV_HOLD_DUTY_PCT );
+        }
+    }
 }
 
 void LpSolValve_Toggle( UInt8 ch )

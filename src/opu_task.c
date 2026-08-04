@@ -32,6 +32,7 @@
 #include "lpsolvalve.h"
 #include "hpsolvalve.h"
 #include "uartcomm.h"
+#include "statemachine.h"
 
 /*==============================================================================
  * Gloabal Variables
@@ -73,10 +74,12 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define TCMD_COMMAND_SVCON          "SVCON"
 #define TCMD_COMMAND_TMREQ          "TMREQ"
 #define TCMD_COMMAND_DIAG           "DIAG"
+#define TCMD_COMMAND_MODE           "MODE"
 #define TCMD_ACK_DATA               "Ack"
 #define TCMD_RX_LINE_SIZE           512U
 #define TCMD_TMREQ_FIELD_COUNT      2U
 #define TCMD_DIAG_FIELD_COUNT       2U
+#define TCMD_MODE_FIELD_COUNT       3U
 #define TCMD_SVCON_FIELD_COUNT      (2U + LPSOLVALVE_CHANNEL_COUNT + HPSOLVALVE_CHANNEL_COUNT)
 #define TCMD_MAX_FIELD_COUNT        TCMD_SVCON_FIELD_COUNT
 #define TC_TASK_PERIOD_MS           1000UL
@@ -108,6 +111,7 @@ static void RsTask_SendAckPacket( void );
 static void RsTask_SendDiagPacket( void );
 static void RsTask_ProcessRx( void );
 static void RsTask_ProcessTelecommandLine( char *line );
+static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode );
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState );
 static void Opu_10msCallback( void *context );
 static void Opu_100msCallback( void *context );
@@ -234,15 +238,18 @@ static void RsTask_SendSensorPacket( void )
 {
     sSensorScan stScan;
     UInt32 uiPacketTick;
+    const char *pcModeName;
     char cTxMsg[240];
     int iTxLen;
 
     Sensor_GetScan( &stScan );
     uiPacketTick = (UInt32)xTaskGetTickCount();
+    pcModeName = StateMachine_GetModeName( StateMachine_GetMode() );
 
     iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
-                       "$iGRVT50,%lu,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+                       "$iGRVT50,%lu,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
                        (unsigned long)uiPacketTick,
+                       pcModeName,
                        (long)stScan.pt.adcMilliVolt[SENSOR_PT1_INDEX],
                        (long)stScan.pt.adcMilliVolt[1U],
                        (long)stScan.pt.adcMilliVolt[2U],
@@ -289,6 +296,54 @@ static UInt8 RsTask_ParseBinaryField( const char *text, UInt8 *value )
     return 0U;
 }
 
+static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode )
+{
+    if( (text == NULL) || (mode == NULL) )
+    {
+        return 0U;
+    }
+
+    if( (strcmp( text, "0" ) == 0) ||
+        (strcmp( text, "INIT" ) == 0) ||
+        (strcmp( text, "init" ) == 0) ||
+        (strcmp( text, "init_mode" ) == 0) )
+    {
+        *mode = STATE_MACHINE_INIT_MODE;
+        return 1U;
+    }
+
+    if( (strcmp( text, "1" ) == 0) ||
+        (strcmp( text, "NORMAL" ) == 0) ||
+        (strcmp( text, "normal" ) == 0) ||
+        (strcmp( text, "normal_mode" ) == 0) )
+    {
+        *mode = STATE_MACHINE_NORMAL_MODE;
+        return 1U;
+    }
+
+    if( (strcmp( text, "2" ) == 0) ||
+        (strcmp( text, "RUN" ) == 0) ||
+        (strcmp( text, "run" ) == 0) ||
+        (strcmp( text, "run_mode" ) == 0) )
+    {
+        *mode = STATE_MACHINE_RUN_MODE;
+        return 1U;
+    }
+
+    if( (strcmp( text, "3" ) == 0) ||
+        (strcmp( text, "DIAG" ) == 0) ||
+        (strcmp( text, "diag" ) == 0) ||
+        (strcmp( text, "DIAGNOSTIC" ) == 0) ||
+        (strcmp( text, "diagnostic" ) == 0) ||
+        (strcmp( text, "diagnostic_mode" ) == 0) )
+    {
+        *mode = STATE_MACHINE_DIAGNOSTIC_MODE;
+        return 1U;
+    }
+
+    return 0U;
+}
+
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState )
 {
     UInt8 i;
@@ -320,6 +375,7 @@ static volatile UInt32 s_tcmdRxUnknownCommandCount = 0U;
 static volatile UInt32 s_tcmdTmreqCount = 0U;
 static volatile UInt32 s_tcmdSvconCount = 0U;
 static volatile UInt32 s_tcmdDiagCount = 0U;
+static volatile UInt32 s_tcmdModeCount = 0U;
 static volatile UInt32 s_tcmdAckSentCount = 0U;
 static volatile UInt32 s_tcmdRxOverflowCount = 0U;
 static volatile UInt16 s_tcmdLastLineLen = 0U;
@@ -385,6 +441,7 @@ static void RsTask_ProcessTelecommandLine( char *line )
     UInt8 fieldCount = 0U;
     UInt8 lpvState[LPSOLVALVE_CHANNEL_COUNT];
     UInt8 hpvState[HPSOLVALVE_CHANNEL_COUNT];
+    eStateMachineMode requestedMode;
     UInt8 i;
 
     if( line == NULL )
@@ -448,6 +505,23 @@ static void RsTask_ProcessTelecommandLine( char *line )
         {
             s_tcmdDiagCount++;
             RsTask_SendDiagPacket();
+        }
+        else
+        {
+            s_tcmdRxBadFieldCount++;
+        }
+        return;
+    }
+
+    if( strcmp( fields[1], TCMD_COMMAND_MODE ) == 0 )
+    {
+        if( (fieldCount == TCMD_MODE_FIELD_COUNT) &&
+            (RsTask_ParseModeField( fields[2], &requestedMode ) != 0U) &&
+            (StateMachine_RequestMode( requestedMode ) != 0U) )
+        {
+            s_tcmdModeCount++;
+            s_tcmdAckSentCount++;
+            RsTask_SendAckPacket();
         }
         else
         {
@@ -1219,6 +1293,7 @@ void OpuTask( void *pvParameters )
     /* Task 생성 */
 	TaskCreate();
     UartComm_SetRxNotifyTask( xRsTask, RSTASK_NOTIFY_RX_READY );
+    StateMachine_Init();
     OpuTimer_RegisterDefaultCallbacks();
     OpuTimer_Init();
 
@@ -1240,6 +1315,9 @@ static void Opu_10msCallback( void *context )
 
     s_opu10msCallbackCount++;
     WDT_REGS->WDT_CR = WDT_CR_KEY_PASSWD | WDT_CR_WDRSTT_Msk;
+    LpSolValve_Service10ms();
+    HpSolValve_Service10ms();
+    StateMachine_100HzEvent();
 }
 
 static void Opu_100msCallback( void *context )
