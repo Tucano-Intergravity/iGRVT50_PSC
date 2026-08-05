@@ -98,6 +98,7 @@ extern void LpValve_Set( UInt8 ucCh, UInt8 ucOn );
 /* --- Heater (TC3 TIOA9/TIOB9) --- */
 extern void Heater_Init( void );
 extern void Heater_SetDuty( UInt8 ucCh, UInt8 ucPct );
+extern void SparkPlug_Set( UInt8 on );
 
 /* --- HP Valve Driver DRV3946-Q1 (SPI1) --- */
 extern UInt8  g_drvPC[2];

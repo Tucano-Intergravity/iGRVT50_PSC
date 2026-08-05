@@ -139,8 +139,8 @@ void PWM_Init( void )
 #define HTR_PE0_MASK    (1UL << 0)  /* PE0 = TIOA9  = Heater1 (TC3 ch0, peripheral B) */
 #define HTR_PE1_MASK    (1UL << 1)  /* PE1 = TIOB9  = Heater2 (TC3 ch0, peripheral B) */
 #define HTR_PE3_MASK    (1UL << 3)  /* PE3 = TIOA10 = Heater3      (TC3 ch1, peripheral B) */
-#define HTR_PE4_MASK    (1UL << 4)  /* PE4 = TIOB10 = Heater4/SP01 (TC3 ch1, peripheral B) */
-#define HTR_PC5_MASK    (1UL << 5)  /* PC5 = TIOA6  = Heater5/SP02 (TC2 ch0, peripheral B) */
+#define HTR_PE4_MASK    (1UL << 4)  /* PE4 = TIOB10 = Heater4 (TC3 ch1, peripheral B) */
+#define HTR_PC5_MASK    (1UL << 5)  /* PC5 = SP (GPIO ON/OFF, no PWM) */
 
 /* duty 0%일 때 핀을 GPIO로 회수해 LOW 고정 -> 히터 OFF 보장.
  * (TC waveform에서 RA=0이면 TIOA가 H로 고착되는 엣지버그 회피) */
@@ -170,9 +170,9 @@ void Heater_Init( void )
      *  ※ID_TC2_CHANNEL0=47 (32 초과라 PCER1, bit=47-32=15). 1<<47은 오버플로 버그였음! */
     PMC_REGS->PMC_PCER1 = (1UL << (ID_TC3_CHANNEL0 - 32U))
                         | (1UL << (ID_TC3_CHANNEL0 + 1U - 32U))
-                        | (1UL << (ID_TC2_CHANNEL0 - 32U));   /* HTR5 = TC2 ch0 */
+                        | (1UL << (ID_TC2_CHANNEL0 - 32U));   /* TC2 ch0 kept idle while PC5 is SP GPIO */
 
-    /* 1.5) PE3/PE4 = peripheral B (TC3 TIOA10/TIOB10), PC5 = peripheral B (TC2 TIOA6).
+    /* 1.5) PE3/PE4 = peripheral B (TC3 TIOA10/TIOB10).
      *  PE0/PE1은 MCC가 이미 B로 설정. (B = ABCDSR[0] bit=1, ABCDSR[1] bit=0) */
     PIOE_REGS->PIO_ABCDSR[0] |=  (HTR_PE3_MASK | HTR_PE4_MASK);
     PIOE_REGS->PIO_ABCDSR[1] &= ~(HTR_PE3_MASK | HTR_PE4_MASK);
@@ -193,15 +193,15 @@ void Heater_Init( void )
     TC3_REGS->TC_CHANNEL[1].TC_RB = 0U;     /* Heater4 duty 0 (off) */
     TC3_REGS->TC_CHANNEL[1].TC_CCR = TC_CCR_CLKEN_Msk | TC_CCR_SWTRG_Msk;
 
-    /* 2.7) TC2 ch0(=글로벌 ch6, TIOA6=PC5=HTR5) — TIOA만 사용(RA) */
+    /* 2.7) TC2 ch0 remains initialized but PC5 is assigned to SP GPIO control. */
     TC2_REGS->TC_CHANNEL[0].TC_CMR = cmr;
     TC2_REGS->TC_CHANNEL[0].TC_RC = HTR_TC_PERIOD;
-    TC2_REGS->TC_CHANNEL[0].TC_RA = 0U;     /* Heater5 duty 0 (off) */
+    TC2_REGS->TC_CHANNEL[0].TC_RA = 0U;
     TC2_REGS->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN_Msk | TC_CCR_SWTRG_Msk;
 
-    /* 4) 부팅 시 5채널 모두 OFF 보장 (GPIO LOW 고정) */
+    /* 4) 부팅 시 Heater 1~4 + SP 모두 OFF 보장 (GPIO LOW 고정) */
     htr_pin_off( HTR_PE0_MASK | HTR_PE1_MASK | HTR_PE3_MASK | HTR_PE4_MASK );  /* PIOE: HTR1~4 */
-    PIOC_REGS->PIO_PER  = HTR_PC5_MASK;     /* PIOC: HTR5(PC5) OFF */
+    PIOC_REGS->PIO_PER  = HTR_PC5_MASK;     /* PIOC: SP(PC5) OFF */
     PIOC_REGS->PIO_OER  = HTR_PC5_MASK;
     PIOC_REGS->PIO_CODR = HTR_PC5_MASK;
 }
@@ -219,24 +219,7 @@ void Heater_SetDuty( UInt8 ucCh, UInt8 ucPct )
     UInt8  useA;     /* TIOA(RA)면 1, TIOB(RB)면 0 */
 
     if( ucPct > 100U ) ucPct = 100U;
-    if( ucCh < 1U || ucCh > 5U ) { printf( "htr: ch 1~5\r\n" ); return; }
-
-    /* ch5 = TC2 ch0 TIOA6 = PC5 (별도 포트 PIOC / 별도 타이머 TC2) */
-    if( ucCh == 5U )
-    {
-        if( ucPct == 0U )
-        {
-            PIOC_REGS->PIO_PER = HTR_PC5_MASK; PIOC_REGS->PIO_OER = HTR_PC5_MASK;
-            PIOC_REGS->PIO_CODR = HTR_PC5_MASK;     /* GPIO LOW -> OFF */
-            printf( "Heater5 duty = 0%% (OFF, GPIO low)\r\n" );
-            return;
-        }
-        PIOC_REGS->PIO_PDR = HTR_PC5_MASK;          /* PC5 -> peripheral B (TIOA6) */
-        uiDuty = (ucPct >= 100U) ? (HTR_TC_PERIOD + 1U) : (((UInt32)HTR_TC_PERIOD * ucPct) / 100U);
-        TC2_REGS->TC_CHANNEL[0].TC_RA = uiDuty;
-        printf( "Heater5 duty = %d%%\r\n", ucPct );
-        return;
-    }
+    if( ucCh < 1U || ucCh > 4U ) { printf( "htr: ch 1~4\r\n" ); return; }
 
     /* ch1=ch0/A(PE0,TIOA9), ch2=ch0/B(PE1,TIOB9), ch3=ch1/A(PE3,TIOA10), ch4=ch1/B(PE4,TIOB10) */
     switch( ucCh )
@@ -261,6 +244,22 @@ void Heater_SetDuty( UInt8 ucCh, UInt8 ucPct )
     if( useA ) TC3_REGS->TC_CHANNEL[tcch].TC_RA = uiDuty;   /* TIOA high-time */
     else       TC3_REGS->TC_CHANNEL[tcch].TC_RB = uiDuty;   /* TIOB high-time */
     printf( "Heater%d duty = %d%%\r\n", ucCh, ucPct );
+}
+
+void SparkPlug_Set( UInt8 on )
+{
+    TC2_REGS->TC_CHANNEL[0].TC_RA = 0U;
+    PIOC_REGS->PIO_PER = HTR_PC5_MASK;
+    PIOC_REGS->PIO_OER = HTR_PC5_MASK;
+
+    if( on != 0U )
+    {
+        PIOC_REGS->PIO_SODR = HTR_PC5_MASK;
+    }
+    else
+    {
+        PIOC_REGS->PIO_CODR = HTR_PC5_MASK;
+    }
 }
 
 /**

@@ -34,8 +34,10 @@ PT_COUNT = 9
 TC_COUNT = 4
 LPV_COUNT = 12
 HPV_COUNT = 8
+HTR_COUNT = 4
+SP_COUNT = 1
 EXPECTED_FIELD_COUNT = 1 + 1 + 1 + PT_COUNT + TC_COUNT
-SVCON_FIELD_COUNT = 1 + 1 + LPV_COUNT + HPV_COUNT
+SVCON_FIELD_COUNT = 1 + 1 + LPV_COUNT + HPV_COUNT + HTR_COUNT + SP_COUNT
 ACK_FIELD_COUNT = 2
 DIAG_VALUE_NAMES = (
     "tick",
@@ -257,7 +259,7 @@ class PscUartMonitorApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("PSC UART Sensor Monitor")
-        self.geometry("1120x760")
+        self.geometry("1180x760")
         self.minsize(980, 700)
 
         self.rx_queue: queue.Queue[tuple[str, object]] = queue.Queue()
@@ -287,6 +289,8 @@ class PscUartMonitorApp(tk.Tk):
         self.tc_vars = [tk.StringVar(value="-") for _ in range(TC_COUNT)]
         self.lpv_cmd_vars = [tk.IntVar(value=0) for _ in range(LPV_COUNT)]
         self.hpv_cmd_vars = [tk.IntVar(value=0) for _ in range(HPV_COUNT)]
+        self.htr_cmd_vars = [tk.IntVar(value=0) for _ in range(HTR_COUNT)]
+        self.sp_cmd_var = tk.IntVar(value=0)
 
         self._build_ui()
         self.refresh_ports()
@@ -358,26 +362,33 @@ class PscUartMonitorApp(tk.Tk):
         for idx, value_var in enumerate(self.tc_vars):
             self._add_value_cell(tc_frame, 0, idx, f"TC{idx + 1}", value_var, "uV")
 
-        command_frame = ttk.LabelFrame(self, text="Telecommand - Sol Valves")
+        command_frame = ttk.LabelFrame(self, text="Telecommand - Actuators")
         command_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
         command_frame.columnconfigure(0, weight=3)
         command_frame.columnconfigure(1, weight=2)
+        command_frame.columnconfigure(2, weight=2)
 
-        lpv_frame = ttk.Frame(command_frame)
+        lpv_frame = ttk.LabelFrame(command_frame, text="LPV")
         lpv_frame.grid(row=0, column=0, padx=(10, 8), pady=8, sticky="ew")
         for col in range(6):
             lpv_frame.columnconfigure(col, weight=1)
-        ttk.Label(lpv_frame, text="LPV").grid(row=0, column=0, sticky="w", pady=(0, 4))
         for idx, variable in enumerate(self.lpv_cmd_vars):
-            self._add_valve_check(lpv_frame, (idx // 6) + 1, idx % 6, f"LPV{idx + 1}", variable)
+            self._add_valve_check(lpv_frame, idx // 6, idx % 6, f"LPV{idx + 1}", variable)
 
-        hpv_frame = ttk.Frame(command_frame)
+        hpv_frame = ttk.LabelFrame(command_frame, text="HPV")
         hpv_frame.grid(row=0, column=1, padx=(8, 10), pady=8, sticky="ew")
         for col in range(4):
             hpv_frame.columnconfigure(col, weight=1)
-        ttk.Label(hpv_frame, text="HPV").grid(row=0, column=0, sticky="w", pady=(0, 4))
         for idx, variable in enumerate(self.hpv_cmd_vars):
-            self._add_valve_check(hpv_frame, (idx // 4) + 1, idx % 4, f"HPV{idx + 1}", variable)
+            self._add_valve_check(hpv_frame, idx // 4, idx % 4, f"HPV{idx + 1}", variable)
+
+        htr_frame = ttk.LabelFrame(command_frame, text="Heater / SP")
+        htr_frame.grid(row=0, column=2, padx=(8, 10), pady=8, sticky="ew")
+        for col in range(5):
+            htr_frame.columnconfigure(col, weight=1)
+        for idx, variable in enumerate(self.htr_cmd_vars):
+            self._add_valve_check(htr_frame, 0, idx, f"HTR{idx + 1}", variable)
+        self._add_valve_check(htr_frame, 0, HTR_COUNT, "SP", self.sp_cmd_var)
 
         control_frame = ttk.LabelFrame(self, text="Commands")
         control_frame.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
@@ -556,6 +567,8 @@ class PscUartMonitorApp(tk.Tk):
     def build_telecommand_packet(self) -> str:
         states = [str(var.get() & 1) for var in self.lpv_cmd_vars]
         states.extend(str(var.get() & 1) for var in self.hpv_cmd_vars)
+        states.extend(str(var.get() & 1) for var in self.htr_cmd_vars)
+        states.append(str(self.sp_cmd_var.get() & 1))
         return f"{HEADER},{COMMAND_SVCON},{','.join(states)}\r\n"
 
     def build_tmreq_packet(self) -> str:
@@ -624,6 +637,9 @@ class PscUartMonitorApp(tk.Tk):
             variable.set(0)
         for variable in self.hpv_cmd_vars:
             variable.set(0)
+        for variable in self.htr_cmd_vars:
+            variable.set(0)
+        self.sp_cmd_var.set(0)
         self.send_telecommand()
 
     def _poll_queue(self) -> None:

@@ -1156,14 +1156,14 @@ static int testLpvFunc(int argc, char *argv[])
 
 /**
  * @fn testHtrFunc
- * @brief 히터(TC3) PWM duty 검증 : htr <1~2> <0~100>
+ * @brief 히터 PWM duty 검증 : htr <1~4> <0~100>
  */
 static int testHtrFunc(int argc, char *argv[])
 {
 	UInt8 ucCh, ucPct;
 	if( argc < 3 )
 	{
-		printf( "usage: htr <1~5> <0~100>  (1=PE0,2=PE1,3=PE3,4=PE4,5=PC5)\r\n" );
+		printf( "usage: htr <1~4> <0~100>  (1=PE0,2=PE1,3=PE3,4=PE4)\r\n" );
 		return(0);
 	}
 	ucCh  = (UInt8)htoi( argv[1] );
@@ -1173,6 +1173,22 @@ static int testHtrFunc(int argc, char *argv[])
 	printf( "  (기대 평균 ≈ %u.%01uV = 28V x %u%%; 실측후 보정)\r\n",
 	        (unsigned)((28U*ucPct)/100U), (unsigned)(((28U*ucPct)%100U)/10U), (unsigned)ucPct );
 	return(0);					// '0' 리턴
+}
+
+static int testSpFunc(int argc, char *argv[])
+{
+	UInt8 ucOn;
+
+	if( argc < 2 )
+	{
+		printf( "usage: sp <0|1>  (PC5 GPIO, 1=ON)\r\n" );
+		return(0);
+	}
+
+	ucOn = (UInt8)atoi( argv[1] );
+	SparkPlug_Set( (ucOn != 0U) ? 1U : 0U );
+	printf( "SP = %u\r\n", (unsigned)((ucOn != 0U) ? 1U : 0U) );
+	return(0);
 }
 
 /* [디버그] TC3(히터) 레지스터 덤프 -> 타이머 동작/duty 설정 확인 (핀 측정 불필요) */
@@ -1263,7 +1279,7 @@ static int testTtFunc(int argc, char *argv[])
 	return(0);
 }
 
-/* [추가] off : 전 출력 OFF (HP 8밸브 + LP 12 + 히터 5). 한 방에 안전정지. */
+/* [추가] off : 전 출력 OFF (HP 8밸브 + LP 12 + 히터 4 + SP). 한 방에 안전정지. */
 static int testOffFunc(int argc, char *argv[])
 {
 	extern UInt16 DRV3946_ChCtrl( UInt8 ch1, UInt8 ch2 );
@@ -1275,9 +1291,10 @@ static int testOffFunc(int argc, char *argv[])
 	for( n = 0U; n < 4U; n++ ) { g_drvNode = n; (void)DRV3946_ChCtrl( 0U, 0U ); }
 	/* LP 12채널 OFF (ch8은 L출력이라 MicroValve_SetDuty(0) 경유해야 정상 off) */
 	for( n = 1U; n <= 12U; n++ ) { MicroValve_SetDuty( n, 0U ); }
-	/* 히터 5채널 0% */
-	for( n = 1U; n <= 5U; n++ ) { Heater_SetDuty( n, 0U ); }
-	printf( "ALL OFF (HP 8 + LP 12 + Heater 5)\r\n" );
+	/* 히터 4채널 + SP OFF */
+	for( n = 1U; n <= 4U; n++ ) { Heater_SetDuty( n, 0U ); }
+	SparkPlug_Set( 0U );
+	printf( "ALL OFF (HP 8 + LP 12 + Heater 4 + SP)\r\n" );
 	return(0);
 }
 
@@ -2299,9 +2316,10 @@ static void UsrCmdList(void)
     UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-F1/F2/O1/O2 (0.5~4.5V, %FS)",'N',"\0");
     UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TT-F1~F3/O1~O3 (K-type, degC)",'N',"\0");
     UsrCmdSet( "hpv",  testHpvFunc,   "HP valve: hpv <1-8> [f] | cycle on/off | node/wake/on/off/stat/init",'N',"\0");
-    UsrCmdSet( "off",  testOffFunc,   "ALL OFF (HP 8 + LP 12 + Heater 5)",'N',"\0");
+    UsrCmdSet( "off",  testOffFunc,   "ALL OFF (HP 8 + LP 12 + Heater 4 + SP)",'N',"\0");
     UsrCmdSet( "lpv",  testLpvFunc,   "LP valve PWM/cycle: lpv <1-12> <0-100> | cycle on/off",'N',"\0");
-    UsrCmdSet( "htr",  testHtrFunc,   "Heater: htr <1-5> <0-100> (1-4=TC3,5=TC2)",'N',"\0");
+    UsrCmdSet( "htr",  testHtrFunc,   "Heater: htr <1-4> <0-100>",'N',"\0");
+    UsrCmdSet( "sp",   testSpFunc,    "Spark plug: sp <0|1> (PC5 GPIO)",'N',"\0");
     UsrCmdSet( "htrreg", testHtrRegFunc, "TC3 reg dump (timer/duty check)",'N',"\0");
     UsrCmdSet( "rs485", testRs485Func, "RS485 USART1 TX test: rs485 [count] [hexbyte]",'N',"\0");
     UsrCmdSet( "araw", testAdcRawFunc, "AFEC1 raw scan CH0-11",'N',"\0");

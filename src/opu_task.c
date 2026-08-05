@@ -77,11 +77,19 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define TCMD_COMMAND_MODE           "MODE"
 #define TCMD_ACK_DATA               "Ack"
 #define TCMD_RX_LINE_SIZE           512U
+#define TCMD_HEATER_CHANNEL_COUNT   4U
+#define TCMD_SP_CHANNEL_COUNT       1U
+#define TCMD_LPV_FIELD_OFFSET       2U
+#define TCMD_HPV_FIELD_OFFSET       (TCMD_LPV_FIELD_OFFSET + LPSOLVALVE_CHANNEL_COUNT)
+#define TCMD_HTR_FIELD_OFFSET       (TCMD_HPV_FIELD_OFFSET + HPSOLVALVE_CHANNEL_COUNT)
+#define TCMD_SP_FIELD_OFFSET        (TCMD_HTR_FIELD_OFFSET + TCMD_HEATER_CHANNEL_COUNT)
 #define TCMD_TMREQ_FIELD_COUNT      2U
 #define TCMD_DIAG_FIELD_COUNT       2U
 #define TCMD_MODE_FIELD_COUNT       3U
-#define TCMD_SVCON_FIELD_COUNT      (2U + LPSOLVALVE_CHANNEL_COUNT + HPSOLVALVE_CHANNEL_COUNT)
+#define TCMD_SVCON_FIELD_COUNT      (TCMD_SP_FIELD_OFFSET + TCMD_SP_CHANNEL_COUNT)
 #define TCMD_MAX_FIELD_COUNT        TCMD_SVCON_FIELD_COUNT
+#define OPU_HEATER_PE_SAFE_MASK     ((1UL << 0) | (1UL << 1) | (1UL << 3) | (1UL << 4))
+#define OPU_SPARK_PLUG_PC5_MASK     (1UL << 5)
 #define TC_TASK_PERIOD_MS           1000UL
 #define ADC_TASK_PERIOD_MS          50UL
 #define OPU_TIMER_TICK_MS           10UL
@@ -112,7 +120,8 @@ static void RsTask_SendDiagPacket( void );
 static void RsTask_ProcessRx( void );
 static void RsTask_ProcessTelecommandLine( char *line );
 static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode );
-static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState );
+static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
+                                     const UInt8 *heaterState, UInt8 spState );
 static void Opu_10msCallback( void *context );
 static void Opu_100msCallback( void *context );
 static void Opu_1000msCallback( void *context );
@@ -344,11 +353,12 @@ static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode )
     return 0U;
 }
 
-static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState )
+static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
+                                     const UInt8 *heaterState, UInt8 spState )
 {
     UInt8 i;
 
-    if( (lpvState == NULL) || (hpvState == NULL) )
+    if( (lpvState == NULL) || (hpvState == NULL) || (heaterState == NULL) )
     {
         return;
     }
@@ -362,6 +372,13 @@ static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvStat
     {
         HpSolValve_Set( (UInt8)(i + 1U), hpvState[i] );
     }
+
+    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
+    {
+        Heater_SetDuty( (UInt8)(i + 1U), (heaterState[i] != 0U) ? 100U : 0U );
+    }
+
+    SparkPlug_Set( spState );
 }
 
 static char s_tcmdRxLine[TCMD_RX_LINE_SIZE];
@@ -441,6 +458,8 @@ static void RsTask_ProcessTelecommandLine( char *line )
     UInt8 fieldCount = 0U;
     UInt8 lpvState[LPSOLVALVE_CHANNEL_COUNT];
     UInt8 hpvState[HPSOLVALVE_CHANNEL_COUNT];
+    UInt8 heaterState[TCMD_HEATER_CHANNEL_COUNT];
+    UInt8 spState;
     eStateMachineMode requestedMode;
     UInt8 i;
 
@@ -544,7 +563,7 @@ static void RsTask_ProcessTelecommandLine( char *line )
 
     for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
     {
-        if( RsTask_ParseBinaryField( fields[2U + i], &lpvState[i] ) == 0U )
+        if( RsTask_ParseBinaryField( fields[TCMD_LPV_FIELD_OFFSET + i], &lpvState[i] ) == 0U )
         {
             s_tcmdRxBadBinaryCount++;
             return;
@@ -553,18 +572,33 @@ static void RsTask_ProcessTelecommandLine( char *line )
 
     for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
     {
-        if( RsTask_ParseBinaryField( fields[2U + LPSOLVALVE_CHANNEL_COUNT + i], &hpvState[i] ) == 0U )
+        if( RsTask_ParseBinaryField( fields[TCMD_HPV_FIELD_OFFSET + i], &hpvState[i] ) == 0U )
         {
             s_tcmdRxBadBinaryCount++;
             return;
         }
     }
 
+    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_ParseBinaryField( fields[TCMD_HTR_FIELD_OFFSET + i], &heaterState[i] ) == 0U )
+        {
+            s_tcmdRxBadBinaryCount++;
+            return;
+        }
+    }
+
+    if( RsTask_ParseBinaryField( fields[TCMD_SP_FIELD_OFFSET], &spState ) == 0U )
+    {
+        s_tcmdRxBadBinaryCount++;
+        return;
+    }
+
     s_tcmdSvconCount++;
     s_tcmdAckSentCount++;
     /* Ack means the SVCON packet was accepted, not that valve actuation is complete. */
     RsTask_SendAckPacket();
-    RsTask_ApplyTelecommand( lpvState, hpvState );
+    RsTask_ApplyTelecommand( lpvState, hpvState, heaterState, spState );
 }
 
 static void RsTask_ProcessRx( void )
@@ -1252,9 +1286,18 @@ void EnterSafeState( void )
     PIOD_REGS->PIO_PER  = LPV01_RTN_PD12_MASK;
     PIOD_REGS->PIO_OER  = LPV01_RTN_PD12_MASK;
     PIOD_REGS->PIO_CODR = LPV01_RTN_PD12_MASK;
-    /* 히터(TC3): duty 0 */
+    /* Heater 1~4 and spark plug: force GPIO low/off. */
     TC3_REGS->TC_CHANNEL[0].TC_RA = 0U;
     TC3_REGS->TC_CHANNEL[0].TC_RB = 0U;
+    TC3_REGS->TC_CHANNEL[1].TC_RA = 0U;
+    TC3_REGS->TC_CHANNEL[1].TC_RB = 0U;
+    TC2_REGS->TC_CHANNEL[0].TC_RA = 0U;
+    PIOE_REGS->PIO_PER  = OPU_HEATER_PE_SAFE_MASK;
+    PIOE_REGS->PIO_OER  = OPU_HEATER_PE_SAFE_MASK;
+    PIOE_REGS->PIO_CODR = OPU_HEATER_PE_SAFE_MASK;
+    PIOC_REGS->PIO_PER  = OPU_SPARK_PLUG_PC5_MASK;
+    PIOC_REGS->PIO_OER  = OPU_SPARK_PLUG_PC5_MASK;
+    PIOC_REGS->PIO_CODR = OPU_SPARK_PLUG_PC5_MASK;
 }
 
 void OpuTask( void *pvParameters )
