@@ -1,6 +1,6 @@
 # PSC Progress Memo
 
-Last updated: 2026-08-04 KST
+Last updated: 2026-08-05 KST
 
 Read this file first when resuming the PSC / iGRVT50 SAMV71 board test work.
 
@@ -151,7 +151,7 @@ The old 100 ms callback debug output was removed:
   - `sam_ctl.X/iGRVT50/source/lpsolvalve.c`
 - LPV open-hold behavior:
   - OPEN: 20 ms nominal, 100% duty, about 28 V output with 28 V supply.
-  - HOLD: 10% duty.
+  - HOLD: 20% duty.
   - PWM frequency: LPV1-LPV8 = 20 kHz; LPV9-LPV12 via TC0 = about 19.99 kHz.
   - LPV is voltage/duty control, not current regulation.
   - Repeated ON while already OPEN/HOLD is a no-op, so it should not restart the open pulse.
@@ -214,6 +214,8 @@ Important current-limit note:
 
 - LSV0 / LPSV1 was confirmed working.
 - HPV0 / HPSV1 has the real solenoid connected.
+- 2026-08-05: LPV and HPV operation confirmed during board test.
+- LPV hold did not hold reliably at 10% duty, so LPV HOLD duty was raised to 20%.
 - Earlier connector guidance for HPV was pins 51 and 46, but confirm against schematic before rewiring.
 - User found one pressure-sensor issue was connector contact related.
 - PT1 input was once observed on PT2, so keep channel mapping in mind during future tests.
@@ -234,7 +236,7 @@ C:\PSC\SAM_CTL_Control - IO\sam_ctl.X
 
 Last known result:
 
-- Build succeeded on 2026-08-04 after LPV PWM was set back to 20 kHz.
+- Build succeeded on 2026-08-05 after LPV HOLD duty was changed to 20%.
 - HEX: `C:\PSC\SAM_CTL_Control - IO\sam_ctl.X\dist\default\production\sam_ctl.X.production.hex`
 
 Known existing warnings:

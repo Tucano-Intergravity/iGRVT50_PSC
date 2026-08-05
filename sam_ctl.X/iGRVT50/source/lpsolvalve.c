@@ -6,7 +6,7 @@
 #define LPSV1_PWM_MODE          (PWM_CMR_CPRE_MCK | PWM_CMR_CPOL_LOW_POLARITY | \
                                  PWM_CMR_UPDS_UPDATE_AT_PERIOD | PWM_CMR_CES_SINGLE_EVENT)
 #define LPSV_OPEN_DUTY_PCT      100U
-#define LPSV_HOLD_DUTY_PCT      10U
+#define LPSV_HOLD_DUTY_PCT      20U
 #define LPSV_OPEN_HOLD_TICKS    2U
 
 typedef enum LpSolValveState {
