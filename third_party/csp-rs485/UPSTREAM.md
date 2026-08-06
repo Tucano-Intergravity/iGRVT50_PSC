@@ -63,9 +63,13 @@ command creates and removes build artifacts.
 5. Recompute each target SHA-256 (for example, with PowerShell
    `Get-FileHash -Algorithm SHA256`) and update the manifest hashes.
 6. Confirm that no other `.c` or `.h` file exists below this directory.
-7. Run `python tools/verify_csp_vendor.py` from the firmware repository root.
-   If the source checkout is elsewhere, pass `--source-root PATH`; when the
-   checkout exists, the verifier also requires an empty `git diff --no-index`
-   for every source/target pair.
-8. Inspect the staged diff and confirm that no target port, generated file,
-   test fixture, configuration, or nested dependency entered the intake.
+7. Stage the dependency snapshot, inspect the staged diff, and confirm that no
+   target port, generated file, test fixture, configuration, or nested
+   dependency entered the intake. Commit the reviewed snapshot.
+8. Run `python tools/verify_csp_vendor.py` from the firmware repository root.
+   The verifier intentionally requires `.gitmodules` and `third_party` vendor
+   state to agree across committed `HEAD`, the index, and the worktree. If the
+   source checkout is elsewhere, pass `--source-root PATH`; when the checkout
+   exists, the verifier also requires an empty `git diff --no-index` for every
+   source/target pair. Correct any failure and amend or add a follow-up commit
+   before treating the synchronized snapshot as verified.

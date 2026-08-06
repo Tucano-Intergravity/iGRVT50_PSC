@@ -37,6 +37,8 @@ class VendorFixture:
             capture_output=True,
             text=True,
         )
+        self.git("config", "user.name", "Vendor Verifier Test")
+        self.git("config", "user.email", "vendor-verifier@example.invalid")
         self.set_gitlink(APPROVED_LIBCSP)
 
         rows = []
@@ -54,28 +56,39 @@ class VendorFixture:
         upstream = self.repo / "third_party" / "csp-rs485" / "UPSTREAM.md"
         upstream.write_text(
             "# Fixture provenance\n\n"
+            "## Authorized file manifest\n\n"
+            "Hashes are recorded below.\n\n"
             "| Target path | Source path | SHA-256 |\n"
             "| --- | --- | --- |\n"
             + "\n".join(rows)
-            + "\n",
+            + "\n\n"
+            "## Synchronization procedure\n\n"
+            "Fixture only.\n",
             encoding="utf-8",
         )
+        self.git("add", "third_party/csp-rs485")
+        self.git("commit", "--quiet", "-m", "valid vendor fixture")
+        (self.repo / "third_party" / "libcsp").mkdir()
 
-    def set_gitlink(self, commit: str) -> None:
-        subprocess.run(
-            [
-                "git",
-                "-C",
-                str(self.repo),
-                "update-index",
-                "--add",
-                "--cacheinfo",
-                f"160000,{commit},third_party/libcsp",
-            ],
+    def git(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *arguments],
             check=True,
             capture_output=True,
             text=True,
         )
+
+    def set_gitlink(self, commit: str) -> None:
+        self.git(
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            f"160000,{commit},third_party/libcsp",
+        )
+
+    def commit(self, message: str) -> None:
+        self.git("add", "third_party/csp-rs485")
+        self.git("commit", "--quiet", "-m", message)
 
     def run(self) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -112,19 +125,35 @@ class VerifyCspVendorTests(unittest.TestCase):
         )
         self.assertEqual(result.stderr, "")
 
-    def test_rejects_wrong_libcsp_gitlink(self) -> None:
+    def test_rejects_wrong_committed_libcsp_gitlink(self) -> None:
         self.fixture.set_gitlink(WRONG_LIBCSP)
+        self.fixture.git("commit", "--quiet", "-m", "wrong committed gitlink")
         self.assert_failure("libcsp gitlink")
+
+    def test_rejects_wrong_committed_gitlink_corrected_only_in_index(self) -> None:
+        self.fixture.set_gitlink(WRONG_LIBCSP)
+        self.fixture.git("commit", "--quiet", "-m", "wrong committed gitlink")
+        self.fixture.set_gitlink(APPROVED_LIBCSP)
+        self.assert_failure("index differs from HEAD")
 
     def test_rejects_changed_vendored_file(self) -> None:
         changed = self.fixture.repo / "third_party/csp-rs485/src/csp_rs485_link.c"
         changed.write_text("changed\n", encoding="utf-8")
-        self.assert_failure("SHA-256 mismatch")
+        self.assert_failure("worktree differs from index")
+
+    def test_rejects_staged_only_vendor_corruption(self) -> None:
+        target = "third_party/csp-rs485/src/csp_rs485_link.c"
+        changed = self.fixture.repo / target
+        original = changed.read_bytes()
+        changed.write_text("staged corruption\n", encoding="utf-8")
+        self.fixture.git("add", target)
+        changed.write_bytes(original)
+        self.assert_failure("index differs from HEAD")
 
     def test_rejects_missing_vendored_file(self) -> None:
         missing = self.fixture.repo / "third_party/csp-rs485/include/csp_rs485_port.h"
         missing.unlink()
-        self.assert_failure("missing vendored file")
+        self.assert_failure("worktree differs from index")
 
     def test_rejects_extra_c_or_h_file(self) -> None:
         extra = self.fixture.repo / "third_party/csp-rs485/src/not_authorized.c"
@@ -135,6 +164,33 @@ class VerifyCspVendorTests(unittest.TestCase):
         source = self.fixture.source / "csp_rs485/src/csp_rs485_supervisor.c"
         source.write_text("source changed\n", encoding="utf-8")
         self.assert_failure("differs from source checkout")
+
+    def test_rejects_malformed_manifest_body_row(self) -> None:
+        upstream = self.fixture.repo / "third_party/csp-rs485/UPSTREAM.md"
+        text = upstream.read_text(encoding="utf-8")
+        malformed = "| `include/not_authorized.h` | malformed body row |\n"
+        text = text.replace(
+            "| `include/csp_rs485_port.h`",
+            malformed + "| `include/csp_rs485_port.h`",
+        )
+        upstream.write_text(text, encoding="utf-8")
+        self.fixture.commit("malformed manifest")
+        self.assert_failure("malformed manifest row")
+
+    def test_rejects_extra_manifest_row(self) -> None:
+        upstream = self.fixture.repo / "third_party/csp-rs485/UPSTREAM.md"
+        text = upstream.read_text(encoding="utf-8")
+        extra = (
+            "| `src/not_authorized.c` | `csp_rs485/src/not_authorized.c` | "
+            "`aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` |\n"
+        )
+        text = text.replace(
+            "| `src/csp_rs485_supervisor.c`",
+            extra + "| `src/csp_rs485_supervisor.c`",
+        )
+        upstream.write_text(text, encoding="utf-8")
+        self.fixture.commit("extra manifest row")
+        self.assert_failure("extra=src/not_authorized.c")
 
 
 if __name__ == "__main__":

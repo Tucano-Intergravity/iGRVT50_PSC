@@ -13,6 +13,7 @@ import sys
 
 APPROVED_LIBCSP = "87006959696c78f70535ab382b0bcd4cb5a6558d"
 DEFAULT_SOURCE_ROOT = Path(r"C:\PSC\csp-rs485")
+DEPENDENCY_PATHS = (".gitmodules", "third_party/libcsp", "third_party/csp-rs485")
 FILE_MAP = (
     ("include/csp_rs485_link.h", "csp_rs485/include/csp_rs485_link.h"),
     ("include/csp_rs485_port.h", "csp_rs485/include/csp_rs485_port.h"),
@@ -26,6 +27,9 @@ FILE_MAP = (
 MANIFEST_ROW = re.compile(
     r"^\|\s*`([^`]+)`\s*\|\s*`([^`]+)`\s*\|\s*`([0-9a-fA-F]{64})`\s*\|\s*$"
 )
+MANIFEST_HEADING = "## Authorized file manifest"
+MANIFEST_HEADER = "| Target path | Source path | SHA-256 |"
+MANIFEST_SEPARATOR = "| --- | --- | --- |"
 
 
 class VerificationError(RuntimeError):
@@ -44,16 +48,52 @@ def run_git(repo_root: Path, *arguments: str) -> subprocess.CompletedProcess[str
     return result
 
 
+def verify_dependency_snapshot(repo_root: Path) -> None:
+    comparisons = (
+        (
+            "index differs from HEAD",
+            "--cached",
+        ),
+        (
+            "worktree differs from index",
+            "--ignore-submodules=none",
+        ),
+    )
+    for failure, comparison in comparisons:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "diff",
+                comparison,
+                "--quiet",
+                "HEAD",
+                "--",
+                *DEPENDENCY_PATHS,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 1:
+            raise VerificationError(
+                f"dependency {failure}: .gitmodules or third_party vendor state"
+            )
+        if result.returncode != 0:
+            detail = result.stderr.strip() or result.stdout.strip()
+            raise VerificationError(f"git snapshot comparison failed: {detail}")
+
+
 def verify_libcsp_gitlink(repo_root: Path) -> None:
     result = run_git(
         repo_root,
-        "ls-files",
-        "--stage",
+        "ls-tree",
+        "HEAD",
         "--",
         "third_party/libcsp",
     )
     match = re.fullmatch(
-        r"160000 ([0-9a-f]{40}) 0\tthird_party/libcsp\r?\n?",
+        r"160000 commit ([0-9a-f]{40})\tthird_party/libcsp\r?\n?",
         result.stdout,
     )
     if match is None:
@@ -69,15 +109,55 @@ def read_manifest(upstream_path: Path) -> dict[str, tuple[str, str]]:
     if not upstream_path.is_file():
         raise VerificationError(f"missing provenance file: {upstream_path}")
 
+    lines = upstream_path.read_text(encoding="utf-8").splitlines()
+    heading_indexes = [
+        index for index, line in enumerate(lines) if line == MANIFEST_HEADING
+    ]
+    if len(heading_indexes) != 1:
+        raise VerificationError(
+            "manifest must contain exactly one authorized file manifest section"
+        )
+    section_start = heading_indexes[0] + 1
+    section_end = next(
+        (
+            index
+            for index in range(section_start, len(lines))
+            if lines[index].startswith("## ")
+        ),
+        len(lines),
+    )
+    section = lines[section_start:section_end]
+    header_indexes = [
+        index for index, line in enumerate(section) if line == MANIFEST_HEADER
+    ]
+    if len(header_indexes) != 1:
+        raise VerificationError(
+            "authorized file manifest must contain exactly one table header"
+        )
+    header_index = header_indexes[0]
+    separator_index = header_index + 1
+    if (
+        separator_index >= len(section)
+        or section[separator_index] != MANIFEST_SEPARATOR
+    ):
+        raise VerificationError("authorized file manifest has an invalid separator")
+
     manifest: dict[str, tuple[str, str]] = {}
-    for line in upstream_path.read_text(encoding="utf-8").splitlines():
+    body_end = separator_index + 1
+    while body_end < len(section) and section[body_end] != "":
+        line = section[body_end]
         match = MANIFEST_ROW.fullmatch(line)
         if match is None:
-            continue
+            raise VerificationError(f"malformed manifest row: {line}")
         target, source, digest = match.groups()
         if target in manifest:
             raise VerificationError(f"duplicate manifest path: {target}")
         manifest[target] = (source, digest.lower())
+        body_end += 1
+
+    unexpected_rows = [line for line in section[body_end:] if line.startswith("|")]
+    if unexpected_rows:
+        raise VerificationError(f"malformed manifest row: {unexpected_rows[0]}")
 
     expected = {target: source for target, source in FILE_MAP}
     actual = {target: source for target, (source, _digest) in manifest.items()}
@@ -173,6 +253,7 @@ def verify_source_diff(
 
 def verify(repo_root: Path, source_root: Path) -> None:
     vendor_root = repo_root / "third_party" / "csp-rs485"
+    verify_dependency_snapshot(repo_root)
     verify_libcsp_gitlink(repo_root)
     manifest = read_manifest(vendor_root / "UPSTREAM.md")
     verify_vendor_files(vendor_root, manifest)
