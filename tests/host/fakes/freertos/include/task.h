@@ -32,5 +32,6 @@ void vTaskSetTimeOutState(TimeOut_t *timeout);
 BaseType_t xTaskCheckForTimeOut(
     TimeOut_t *timeout,
     TickType_t *ticks_to_wait);
+TickType_t xTaskGetTickCount(void);
 
 #endif

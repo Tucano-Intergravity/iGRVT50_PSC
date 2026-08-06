@@ -21,6 +21,8 @@ typedef struct {
 #define portMAX_DELAY UINT32_MAX
 #define configTICK_RATE_HZ 100U
 #define configMAX_PRIORITIES 8U
+#define portTICK_PERIOD_MS \
+    ((TickType_t) (UINT32_C(1000) / configTICK_RATE_HZ))
 #define pdMS_TO_TICKS(milliseconds) \
     ((TickType_t) ((((TickType_t) (milliseconds)) * configTICK_RATE_HZ) \
         / UINT32_C(1000)))

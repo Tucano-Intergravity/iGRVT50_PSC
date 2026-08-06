@@ -10,6 +10,7 @@ TEST_BINARY := $(BUILD_DIR)/csp-rs485-host-tests
 CC ?= cc
 
 COMMON_CPPFLAGS := \
+	-I$(REPO_ROOT)/tests/host/fakes/domain/include \
 	-DCSP_RS485_HOST_TEST \
 	-I$(REPO_ROOT)/tests/host/fakes/freertos/include \
 	-I$(REPO_ROOT)/tests/host/config/include \
@@ -58,6 +59,7 @@ PROJECT_SOURCES := \
 	third_party/csp-rs485/src/csp_rs485_supervisor.c \
 	third_party/csp-rs485/src/csp_rs485_freertos.c \
 	tests/host/fakes/fake_port.c \
+	tests/host/fakes/domain/fake_sam_csp_domain.c \
 	tests/host/fakes/freertos/fake_freertos.c \
 	tests/host/test_main.c \
 	tests/host/test_host_profile.c \
@@ -67,12 +69,19 @@ PROJECT_SOURCES := \
 	tests/host/test_supervisor.c \
 	tests/host/test_freertos_runtime.c \
 	tests/host/test_sam_csp_codec.c \
+	tests/host/test_sam_csp_domain.c \
 	tests/host/support/host_csp.c
 
 SAM_CSP_CODEC_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_codec.c
 ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_CODEC_SOURCE)),)
 COMMON_CPPFLAGS += -DSAM_CSP_CODEC_HAVE_IMPLEMENTATION=1
 PROJECT_SOURCES += $(SAM_CSP_CODEC_SOURCE)
+endif
+
+SAM_CSP_DOMAIN_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_domain.c
+ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_DOMAIN_SOURCE)),)
+COMMON_CPPFLAGS += -DSAM_CSP_DOMAIN_HAVE_IMPLEMENTATION=1
+PROJECT_SOURCES += $(SAM_CSP_DOMAIN_SOURCE)
 endif
 
 LIBCSP_SOURCES := \
