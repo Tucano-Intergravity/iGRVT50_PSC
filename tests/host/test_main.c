@@ -22,6 +22,8 @@ extern const test_case_t supervisor_tests[];
 extern const size_t supervisor_test_count;
 extern const test_case_t freertos_runtime_tests[];
 extern const size_t freertos_runtime_test_count;
+extern const test_case_t sam_csp_codec_tests[];
+extern const size_t sam_csp_codec_test_count;
 
 typedef struct {
     const test_case_t *tests;
@@ -105,6 +107,7 @@ int main(int argc, char **argv)
         {link_rx_tests, link_rx_test_count},
         {supervisor_tests, supervisor_test_count},
         {freertos_runtime_tests, freertos_runtime_test_count},
+        {sam_csp_codec_tests, sam_csp_codec_test_count},
     };
 
     for (size_t group = 0U; group < (sizeof(groups) / sizeof(groups[0])); ++group) {

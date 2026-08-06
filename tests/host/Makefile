@@ -13,6 +13,7 @@ COMMON_CPPFLAGS := \
 	-DCSP_RS485_HOST_TEST \
 	-I$(REPO_ROOT)/tests/host/fakes/freertos/include \
 	-I$(REPO_ROOT)/tests/host/config/include \
+	-I$(REPO_ROOT)/sam_ctl.X/iGRVT50/header \
 	-I$(CSP_RS485_DIR)/include \
 	-I$(CSP_RS485_DIR)/src \
 	-isystem $(LIBCSP_DIR)/include
@@ -65,7 +66,14 @@ PROJECT_SOURCES := \
 	tests/host/test_link_tx.c \
 	tests/host/test_supervisor.c \
 	tests/host/test_freertos_runtime.c \
+	tests/host/test_sam_csp_codec.c \
 	tests/host/support/host_csp.c
+
+SAM_CSP_CODEC_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_codec.c
+ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_CODEC_SOURCE)),)
+COMMON_CPPFLAGS += -DSAM_CSP_CODEC_HAVE_IMPLEMENTATION=1
+PROJECT_SOURCES += $(SAM_CSP_CODEC_SOURCE)
+endif
 
 LIBCSP_SOURCES := \
 	$(sort $(wildcard $(LIBCSP_DIR)/src/*.c)) \
