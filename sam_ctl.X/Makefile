@@ -104,6 +104,13 @@ help: .help-post
 .help-post: .help-impl
 # Add your post 'help' code here...
 
+# MPLAB X records per-source option hashes as ignored sentinels, but a fresh
+# command-line checkout does not contain them.  Recreate a missing sentinel so
+# the generated dependency graph remains buildable without tracking IDE output.
+.generated_files/flags/default/%:
+	@$(MKDIR) -p "$(@D)"
+	@echo. > "$@"
+
 
 
 # include project implementation makefile
