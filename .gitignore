@@ -11,6 +11,7 @@ sam_ctl.X/MPLABXLog.xml*
 sam_ctl.X/defmplabxtrace.log*
 .vscode/
 .superpowers/
+.worktrees/
 
 # Object and binary artifacts
 *.o
