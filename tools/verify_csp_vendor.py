@@ -13,7 +13,12 @@ import sys
 
 APPROVED_LIBCSP = "87006959696c78f70535ab382b0bcd4cb5a6558d"
 DEFAULT_SOURCE_ROOT = Path(r"C:\PSC\csp-rs485")
-DEPENDENCY_PATHS = (".gitmodules", "third_party/libcsp", "third_party/csp-rs485")
+DEPENDENCY_PATHS = (
+    ".gitattributes",
+    ".gitmodules",
+    "third_party/libcsp",
+    "third_party/csp-rs485",
+)
 FILE_MAP = (
     ("include/csp_rs485_link.h", "csp_rs485/include/csp_rs485_link.h"),
     ("include/csp_rs485_port.h", "csp_rs485/include/csp_rs485_port.h"),
@@ -188,6 +193,34 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_committed_vendor_files(
+    repo_root: Path, manifest: dict[str, tuple[str, str]]
+) -> None:
+    for target, _source in FILE_MAP:
+        result = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo_root),
+                "show",
+                f"HEAD:third_party/csp-rs485/{target}",
+            ],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            detail = result.stderr.decode(errors="replace").strip()
+            raise VerificationError(
+                f"cannot read committed HEAD blob for {target}: {detail}"
+            )
+        actual = hashlib.sha256(result.stdout).hexdigest()
+        expected = manifest[target][1]
+        if actual != expected:
+            raise VerificationError(
+                f"committed HEAD blob SHA-256 mismatch for {target}: "
+                f"{actual}; expected {expected}"
+            )
+
+
 def verify_vendor_files(
     vendor_root: Path, manifest: dict[str, tuple[str, str]]
 ) -> None:
@@ -256,6 +289,7 @@ def verify(repo_root: Path, source_root: Path) -> None:
     verify_dependency_snapshot(repo_root)
     verify_libcsp_gitlink(repo_root)
     manifest = read_manifest(vendor_root / "UPSTREAM.md")
+    verify_committed_vendor_files(repo_root, manifest)
     verify_vendor_files(vendor_root, manifest)
     verify_source_diff(source_root, vendor_root, manifest)
 

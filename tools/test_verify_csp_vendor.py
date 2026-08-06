@@ -90,7 +90,11 @@ class VendorFixture:
         self.git("add", "third_party/csp-rs485")
         self.git("commit", "--quiet", "-m", message)
 
-    def run(self) -> subprocess.CompletedProcess[str]:
+    def run(
+        self, source_root: Path | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        if source_root is None:
+            source_root = self.source
         return subprocess.run(
             [
                 sys.executable,
@@ -98,7 +102,7 @@ class VendorFixture:
                 "--repo-root",
                 str(self.repo),
                 "--source-root",
-                str(self.source),
+                str(source_root),
             ],
             capture_output=True,
             text=True,
@@ -140,6 +144,35 @@ class VerifyCspVendorTests(unittest.TestCase):
         changed = self.fixture.repo / "third_party/csp-rs485/src/csp_rs485_link.c"
         changed.write_text("changed\n", encoding="utf-8")
         self.assert_failure("worktree differs from index")
+
+    def test_rejects_manifest_matching_only_line_ending_smudged_worktree(self) -> None:
+        target = self.fixture.repo / "third_party/csp-rs485/include/csp_rs485_link.h"
+        smudged = b"fixture file 1\r\n"
+        target.write_bytes(smudged)
+
+        upstream = self.fixture.repo / "third_party/csp-rs485/UPSTREAM.md"
+        original_digest = hashlib.sha256(b"fixture file 1\n").hexdigest()
+        smudged_digest = hashlib.sha256(smudged).hexdigest()
+        upstream.write_text(
+            upstream.read_text(encoding="utf-8").replace(
+                original_digest, smudged_digest
+            ),
+            encoding="utf-8",
+        )
+        self.fixture.git("config", "core.autocrlf", "true")
+        self.fixture.git(
+            "add",
+            "third_party/csp-rs485/include/csp_rs485_link.h",
+            "third_party/csp-rs485/UPSTREAM.md",
+        )
+        self.fixture.git("commit", "--quiet", "-m", "line-ending-smudged fixture")
+
+        result = self.fixture.run(self.fixture.source / "source comparison disabled")
+        self.assertIn(
+            "committed HEAD blob SHA-256 mismatch",
+            result.stdout + result.stderr,
+        )
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_rejects_staged_only_vendor_corruption(self) -> None:
         target = "third_party/csp-rs485/src/csp_rs485_link.c"

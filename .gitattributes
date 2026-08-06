@@ -1,0 +1,2 @@
+third_party/csp-rs485/**/*.c -text whitespace=cr-at-eol
+third_party/csp-rs485/**/*.h -text whitespace=cr-at-eol
