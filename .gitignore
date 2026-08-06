@@ -10,6 +10,7 @@ sam_ctl.X/.generated_files/flags/
 sam_ctl.X/MPLABXLog.xml*
 sam_ctl.X/defmplabxtrace.log*
 .vscode/
+.superpowers/
 
 # Object and binary artifacts
 *.o
