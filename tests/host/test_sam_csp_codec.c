@@ -356,6 +356,11 @@ static void codec_rejects_null_arguments_without_writing(void)
     uint8_t expected[SAM_CSP_HEALTH_RESPONSE_LENGTH];
 
     TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_DECODE_DROP,
+        sam_csp_decode_set_outputs(NULL, 0U, &request, &detail));
+    TEST_ASSERT_EQ_SIZE(0xBEEFU, request.transaction_id);
+    TEST_ASSERT_EQ_SIZE(0xA5U, detail);
+    TEST_ASSERT_EQ_SIZE(
         SAM_CSP_STATUS_INVALID_ARGUMENT,
         sam_csp_decode_set_outputs(NULL, sizeof(set_outputs), &request, &detail));
     TEST_ASSERT_EQ_SIZE(0xBEEFU, request.transaction_id);

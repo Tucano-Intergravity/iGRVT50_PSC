@@ -72,12 +72,16 @@ sam_csp_status_t sam_csp_decode_set_outputs(
 {
     sam_csp_set_outputs_request_t decoded;
 
-    if ((data == NULL) || (request == NULL) || (detail == NULL)) {
+    if ((request == NULL) || (detail == NULL)) {
         return SAM_CSP_STATUS_INVALID_ARGUMENT;
     }
 
     if (length < SAM_CSP_REQUEST_HEADER_LENGTH) {
         return SAM_CSP_DECODE_DROP;
+    }
+
+    if (data == NULL) {
+        return SAM_CSP_STATUS_INVALID_ARGUMENT;
     }
 
     if (data[0] != SAM_CSP_PROTOCOL_VERSION) {
