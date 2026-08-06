@@ -10,7 +10,7 @@ Read this file first when resuming the PSC / iGRVT50 SAMV71 board test work.
 - MPLAB project: `C:\PSC\SAM_CTL_Control - IO\sam_ctl.X`
 - GitHub remote: `https://github.com/Tucano-Intergravity/iGRVT50_PSC.git`
 - Branch: `main`
-- Latest pushed work: check `git log -1 --oneline` after pull.
+- Latest pushed work: `2ef1cb6 Add heater and spark plug telecommand control`
 
 ## Current Firmware Goal
 
@@ -20,9 +20,11 @@ The firmware is configured for PSC board-level sensor telemetry and solenoid tel
 - The old `HELLO\r\n` test output is inactive.
 - Telemetry is not sent periodically.
 - A valid `TMREQ` sends exactly one telemetry packet immediately.
-- A valid `SVCON` returns `$iGRVT50,Ack\r\n`, then applies solenoid states.
+- A valid `SVCON` returns `$iGRVT50,Ack\r\n`, then applies actuator states.
 - LPV/HPV automatic toggle or cycle test code is removed from runtime operation.
-- Solenoid states change only by valid TMTC command or explicit debug-shell command.
+- Solenoid/heater/SP states change only by valid TMTC command or explicit debug-shell command.
+- Heater1~4 are PWM duty-controlled heater outputs.
+- Former Heater5/PC5 is now SP (spark plug) and is controlled as GPIO ON/OFF, not PWM.
 
 ## TMTC Packets
 
@@ -57,11 +59,14 @@ $iGRVT50,MODE,<mode>\r\n
 - Valid MODE command response is `$iGRVT50,Ack\r\n`.
 - The requested mode is applied by the 100 Hz state-machine event.
 
-Solenoid control:
+Actuator control:
 
 ```text
-$iGRVT50,SVCON,<LPV1 0/1>,<LPV2 0/1>,<LPV3 0/1>,<LPV4 0/1>,<LPV5 0/1>,<LPV6 0/1>,<LPV7 0/1>,<LPV8 0/1>,<LPV9 0/1>,<LPV10 0/1>,<LPV11 0/1>,<LPV12 0/1>,<HPV1 0/1>,<HPV2 0/1>,<HPV3 0/1>,<HPV4 0/1>,<HPV5 0/1>,<HPV6 0/1>,<HPV7 0/1>,<HPV8 0/1>\r\n
+$iGRVT50,SVCON,<LPV1 0/1>,<LPV2 0/1>,<LPV3 0/1>,<LPV4 0/1>,<LPV5 0/1>,<LPV6 0/1>,<LPV7 0/1>,<LPV8 0/1>,<LPV9 0/1>,<LPV10 0/1>,<LPV11 0/1>,<LPV12 0/1>,<HPV1 0/1>,<HPV2 0/1>,<HPV3 0/1>,<HPV4 0/1>,<HPV5 0/1>,<HPV6 0/1>,<HPV7 0/1>,<HPV8 0/1>,<HTR1 0/1>,<HTR2 0/1>,<HTR3 0/1>,<HTR4 0/1>,<SP 0/1>\r\n
 ```
+
+- `HTR1`~`HTR4`: `1` means Heater 100% duty ON, `0` means OFF.
+- `SP`: `1` means Spark Plug GPIO ON, `0` means OFF.
 
 SVCON response:
 
@@ -92,6 +97,7 @@ Main runtime wiring is in `src/opu_task.c`.
 - `RsTask_ProcessTelecommandLine()` parses `TMREQ`, `MODE`, `SVCON`, and `DIAG`.
 - RX parser ignores bytes before `$`, restarts on a new `$`, and recovers from partial/glued retry frames.
 - `RSTASK_NOTIFY_TM_EVENT` remains defined as a reserved internal event, but no default timer callback sends it.
+- Definition-document mode restrictions are not implemented yet; current `SVCON` applies all parsed fields.
 
 ## State Machine
 
@@ -173,6 +179,28 @@ The old 100 ms callback debug output was removed:
   - With a 35 ohm coil, expected HOLD voltage is about 6.6 V.
 - Repeated identical HPV state requests are treated as no-op inside the HPV module, so repeated SVCON retries should not cause a close/open click.
 
+## Heater / SP Control
+
+- Heater/SP implementation commit: `2ef1cb6 Add heater and spark plug telecommand control`.
+- Heater channels:
+  - Heater1: PE0 / TIOA9
+  - Heater2: PE1 / TIOB9
+  - Heater3: PE3 / TIOA10
+  - Heater4: PE4 / TIOB10
+- SP (spark plug):
+  - PC5 direct GPIO ON/OFF.
+  - PWM is not used.
+  - Former Heater5 role is removed from `Heater_SetDuty()`.
+- Source files:
+  - `src/opu_task.c`: parses `HTR1`~`HTR4` and `SP` in `SVCON`; safe state forces Heater1~4 and SP OFF.
+  - `src/pwm_func.c`: `Heater_SetDuty()` accepts channels 1~4 only; `SparkPlug_Set()` controls PC5 GPIO.
+  - `src/sam_ctl.h`: declares `SparkPlug_Set()`.
+  - `src/dbg_task.c`: `htr` command is Heater1~4 only; `sp <0|1>` command added; `off` also turns SP OFF.
+- Verification after implementation:
+  - MPLAB make build succeeded.
+  - `python -m py_compile tools\psc_uart_monitor_gui.py` succeeded.
+  - `git diff --check` succeeded.
+
 Important current-limit note:
 
 - Existing DRV3946 current formula in this codebase is:
@@ -203,12 +231,43 @@ Important current-limit note:
 - Default UART settings: `921600 8N1`.
 - GUI parses `$iGRVT50` packets and displays PT1-PT9 in one row and TC1-TC4 in one row below PT.
 - GUI parses the telemetry `mode` field after `SystemTick`.
-- Sol Valve controls keep LPV1-LPV12 and HPV1-HPV8 checkboxes.
+- Telecommand controls now separate LPV, HPV, and Heater/SP groups.
+- GUI includes LPV1-LPV12, HPV1-HPV8, HTR1-HTR4, and SP checkboxes.
 - GUI has a mode selector and `Send MODE`.
 - `Request TM`, `Send MODE`, `Send SVCON`, and `All Off` buttons are grouped in a `Commands` box.
 - GUI sends no artificial TX preamble now.
 - Command timeout is `0.1 s`.
 - `TMREQ`, `MODE`, and `SVCON` automatically retry up to 5 times if no expected response arrives.
+
+## Definition Document Work
+
+- Source document reviewed: `C:\Users\USER\OneDrive\바탕 화면\PSC(추진제어기) 운영 모드, TC 및 TM 정의서.pdf`
+- Review date: 2026-08-05 KST.
+- No code changes were made during the definition-strategy review.
+- User decision: terminal valves are `HPV1` and `HPV2`.
+- SP is the already implemented spark plug on PC5 GPIO.
+- Important definition gap versus current firmware:
+  - Normal/Run mode must block `HPV1`, `HPV2`, and `SP` control.
+  - Diagnostic mode may control all valves, heaters, terminal valves, and SP.
+  - Current firmware does not yet enforce this mode-dependent actuator authority.
+  - Current `MODE` TC is a direct mode request; definition expects higher-level TCs such as Thruster Start, Diag IN/OUT, PAR Start/Stop, EStop, and Ping.
+  - Current `DIAG` command is a parser/communication diagnostic request, not the definition's `Diag IN/OUT` mode-control TC.
+  - Current telemetry lacks actuator state and fault-code fields described by the definition.
+
+Recommended staged implementation strategy:
+
+1. Freeze TC/TM command names and packet formats before coding.
+2. Add a mode-authority matrix for each TC and actuator class.
+3. Implement `SVCON` safety filtering first:
+   - In Normal/Run, force `HPV1=0`, `HPV2=0`, and `SP=0`.
+   - In Diagnostic, allow `HPV1`, `HPV2`, and `SP`.
+4. Add mode-entry safety hooks:
+   - Entering Normal or Run must force `HPV1`, `HPV2`, and `SP` OFF.
+   - EStop must force all actuators OFF and request Normal mode.
+5. Extend the state machine for Thruster Start, Run duration, Run pre-check pass/fail, and Normal return.
+6. Define FDI thresholds and fault-code ownership before implementing automatic Run fault handling.
+7. Extend TMREQ response to include LPV/HPV/HTR/SP state and fault code if the packet format is confirmed.
+8. Update the GUI after firmware TC/TM formats are frozen.
 
 ## Hardware Notes Captured So Far
 
@@ -236,7 +295,7 @@ C:\PSC\SAM_CTL_Control - IO\sam_ctl.X
 
 Last known result:
 
-- Build succeeded on 2026-08-05 after LPV HOLD duty was changed to 20%.
+- Build succeeded on 2026-08-05 after Heater/SP telecommand control was implemented.
 - HEX: `C:\PSC\SAM_CTL_Control - IO\sam_ctl.X\dist\default\production\sam_ctl.X.production.hex`
 
 Known existing warnings:
