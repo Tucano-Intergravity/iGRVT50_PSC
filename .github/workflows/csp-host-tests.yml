@@ -1,0 +1,21 @@
+name: CSP host tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Verify coherent CSP vendor snapshot
+        run: python tools/verify_csp_vendor.py
+      - name: Run vendor verifier unit tests
+        run: python -m unittest discover -s tools -p 'test_*.py' -v
+      - name: Run normal CSP host regression tests
+        run: make -C tests/host clean test CC=gcc
+      - name: Run ASan and UBSan CSP host regression tests
+        run: make -C tests/host clean test CC=gcc SANITIZE=1
