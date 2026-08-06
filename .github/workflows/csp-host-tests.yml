@@ -12,7 +12,19 @@ jobs:
         with:
           submodules: recursive
       - name: Verify coherent CSP vendor snapshot
-        run: python tools/verify_csp_vendor.py
+        shell: bash
+        run: |
+          set +e
+          output="$(python tools/verify_csp_vendor.py 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            escaped_output=${output//%/%25}
+            escaped_output=${escaped_output//$'\r'/%0D}
+            escaped_output=${escaped_output//$'\n'/%0A}
+            echo "::error title=Vendor snapshot verification failed::$escaped_output"
+            exit "$status"
+          fi
       - name: Run vendor verifier unit tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v
       - name: Run normal CSP host regression tests
