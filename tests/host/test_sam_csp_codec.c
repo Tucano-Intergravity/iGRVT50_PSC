@@ -336,6 +336,95 @@ static void health_encoder_does_not_write_when_capacity_is_too_small(void)
     TEST_ASSERT_TRUE(memcmp(expected, output, sizeof(output)) == 0);
 }
 
+static void codec_rejects_null_arguments_without_writing(void)
+{
+    static const uint8_t set_outputs[] = {
+        0x01U, 0x01U, 0x12U, 0x34U, 0x0AU,
+        0x55U, 0xA5U, 0x09U, 0x01U, 0x00U,
+    };
+    const sam_csp_snapshot_t snapshot = {0};
+    const sam_csp_health_t health = {0};
+    sam_csp_set_outputs_request_t request = {
+        .transaction_id = 0xBEEFU,
+        .lpv_on_mask = 0xCAFEU,
+        .hpv_on_mask = 0xA5U,
+        .heater_on_mask = 0x5AU,
+        .spark_on = 0x01U,
+    };
+    uint8_t detail = 0xA5U;
+    uint8_t output[SAM_CSP_HEALTH_RESPONSE_LENGTH];
+    uint8_t expected[SAM_CSP_HEALTH_RESPONSE_LENGTH];
+
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_STATUS_INVALID_ARGUMENT,
+        sam_csp_decode_set_outputs(NULL, sizeof(set_outputs), &request, &detail));
+    TEST_ASSERT_EQ_SIZE(0xBEEFU, request.transaction_id);
+    TEST_ASSERT_EQ_SIZE(0xA5U, detail);
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_STATUS_INVALID_ARGUMENT,
+        sam_csp_decode_set_outputs(set_outputs, sizeof(set_outputs), NULL, &detail));
+    TEST_ASSERT_EQ_SIZE(0xA5U, detail);
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_STATUS_INVALID_ARGUMENT,
+        sam_csp_decode_set_outputs(set_outputs, sizeof(set_outputs), &request, NULL));
+
+    memset(output, 0xA5, sizeof(output));
+    memset(expected, 0xA5, sizeof(expected));
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_status(
+            SAM_CSP_OPCODE_SET_OUTPUTS,
+            0x1234U,
+            SAM_CSP_STATUS_OK,
+            0U,
+            NULL,
+            SAM_CSP_RESPONSE_HEADER_LENGTH));
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_status(
+            SAM_CSP_OPCODE_SET_OUTPUTS,
+            0x1234U,
+            SAM_CSP_STATUS_OK,
+            0U,
+            output,
+            SAM_CSP_RESPONSE_HEADER_LENGTH - 1U));
+    TEST_ASSERT_TRUE(memcmp(expected, output, sizeof(output)) == 0);
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_snapshot(
+            SAM_CSP_OPCODE_GET_SNAPSHOT,
+            0x1234U,
+            NULL,
+            output,
+            sizeof(output)));
+    TEST_ASSERT_TRUE(memcmp(expected, output, sizeof(output)) == 0);
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_snapshot(
+            SAM_CSP_OPCODE_GET_SNAPSHOT,
+            0x1234U,
+            &snapshot,
+            NULL,
+            SAM_CSP_SNAPSHOT_RESPONSE_LENGTH));
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_health(
+            SAM_CSP_OPCODE_GET_HEALTH,
+            0x1234U,
+            NULL,
+            output,
+            sizeof(output)));
+    TEST_ASSERT_TRUE(memcmp(expected, output, sizeof(output)) == 0);
+    TEST_ASSERT_EQ_SIZE(
+        0U,
+        sam_csp_encode_health(
+            SAM_CSP_OPCODE_GET_HEALTH,
+            0x1234U,
+            &health,
+            NULL,
+            SAM_CSP_HEALTH_RESPONSE_LENGTH));
+}
+
 const test_case_t sam_csp_codec_tests[] = {
     {"sam_csp_codec", "decoder_accepts_valid_set_outputs", decoder_accepts_valid_set_outputs},
     {"sam_csp_codec", "status_encoder_matches_exact_six_byte_response", status_encoder_matches_exact_six_byte_response},
@@ -345,6 +434,7 @@ const test_case_t sam_csp_codec_tests[] = {
     {"sam_csp_codec", "snapshot_encoder_does_not_write_when_capacity_is_too_small", snapshot_encoder_does_not_write_when_capacity_is_too_small},
     {"sam_csp_codec", "health_encoder_matches_all_bytes_and_big_endian_counters", health_encoder_matches_all_bytes_and_big_endian_counters},
     {"sam_csp_codec", "health_encoder_does_not_write_when_capacity_is_too_small", health_encoder_does_not_write_when_capacity_is_too_small},
+    {"sam_csp_codec", "codec_rejects_null_arguments_without_writing", codec_rejects_null_arguments_without_writing},
 };
 
 const size_t sam_csp_codec_test_count =
