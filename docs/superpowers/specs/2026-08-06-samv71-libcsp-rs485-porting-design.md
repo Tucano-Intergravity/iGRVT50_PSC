@@ -3,7 +3,7 @@
 - 작성일: 2026-08-06
 - 대상 저장소: `C:\PSC\SAM_CTL_Control - IO`
 - 참조 저장소: `C:\PSC\csp-rs485`
-- 상태: 사용자 승인 완료
+- 상태: 대화형 설계 승인 완료, 서면 스펙 검토 대기
 
 ## 1. 목적
 
@@ -125,6 +125,7 @@ SAM_CTL_Control - IO/
 - commit: `87006959696c78f70535ab382b0bcd4cb5a6558d`
 - top-level `third_party/libcsp` submodule로 직접 고정한다.
 - csp-rs485 내부의 nested libcsp 경로는 반입하거나 빌드하지 않는다.
+- 해당 commit의 `COPYING`은 GNU LGPL v2.1을 명시한다. License text를 보존하고 firmware 배포·static linking에 적용되는 의무는 제품 배포 전에 조직의 compliance 절차로 확인한다.
 
 ### 5.2 csp-rs485
 
@@ -237,7 +238,7 @@ csp-rs485 자체 static RAM은 stream storage, RX chunk, TX frame, task/TCB/sema
 4. SAMV71 port context와 operation table로 `csp_rs485_link_init()`을 호출한다.
 5. peer address 2 route를 RS485 interface에 등록한다.
 6. static router task를 생성한다.
-7. ports 10–12를 처리하는 service socket과 static service task를 생성한다.
+7. 하나의 service socket을 `CSP_ANY`에 bind하고 static service task를 생성한다. Custom ports 10–12는 Binary service가 처리한다. 표준 port 중 `CSP_PING`만 `csp_service_handler(conn, packet)`에 위임하고 나머지 reserved/unknown port는 packet을 해제한 뒤 응답 없이 폐기한다.
 8. 모든 단계 성공 후 application에서 CSP service ready를 게시한다.
 
 실패 시 USART1을 receive-safe 상태로 두고 CSP service를 ready로 게시하지 않는다. 실패 원인은 USART0 debug와 내부 health counter로 관찰한다.
@@ -250,6 +251,7 @@ csp-rs485 자체 static RAM은 stream storage, RX chunk, TX frame, task/TCB/sema
 - requests와 responses 모두 CSP CRC32를 사용한다.
 - KISS frame 자체에 별도 checksum을 추가하지 않는다.
 - RDP를 사용하지 않는다.
+- libcsp 기본 service는 `CSP_PING`만 allowlist한다. Remote reboot와 그 밖의 표준 service는 v1에서 노출하지 않는다.
 - application packet 최대 길이는 66 bytes로 MTU 296보다 작다.
 - 서비스는 request/response 방식이며 unsolicited periodic telemetry를 보내지 않는다.
 
@@ -310,7 +312,20 @@ Status 값:
 | 7 | INTERNAL_ERROR | 내부 자원 또는 처리 오류 |
 | 8 | BUSY | 현재 요청 처리 불가 |
 
-`detail`은 성공 시 0이다. 실패 시 decoder field index 또는 구현 문서에 고정된 하위 오류 코드를 넣는다.
+`detail`은 성공 시 0이며 실패 시 다음 규칙을 사용한다.
+
+| Status | Detail 규칙 |
+|---|---|
+| BAD_VERSION | 0 |
+| BAD_LENGTH | 해당 opcode에서 요구되는 전체 packet length |
+| BAD_OPCODE | 수신한 opcode |
+| INVALID_ARGUMENT | 처음 잘못된 field의 시작 byte offset |
+| INVALID_STATE | 현재 state/mode 값 |
+| APPLY_FAILED | 1 SET_OUTPUTS, 2 SET_MODE |
+| INTERNAL_ERROR | 1 buffer, 2 snapshot, 3 connection, 255 unspecified |
+| BUSY | 0 |
+
+4-byte common request header보다 짧은 packet은 transaction ID를 안전하게 읽을 수 없으므로 응답 없이 폐기하고 malformed counter만 증가시킨다.
 
 ### 9.6 SET_OUTPUTS
 
@@ -351,7 +366,8 @@ OK는 `StateMachine_RequestMode()`가 요청을 수락했다는 의미이며 mod
 - port: 11
 - opcode: `0x01`
 - request length: 4 bytes
-- response length: 66 bytes
+- success response length: 66 bytes
+- error response length: 6 bytes
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -363,21 +379,22 @@ OK는 `StateMachine_RequestMode()`가 요청을 수락했다는 의미이며 mod
 | 14–49 | 36 | `pt_millivolt[9]`, int32 array |
 | 50–65 | 16 | `tc_microvolt[4]`, int32 array |
 
-Validity bits 0–8은 PT 1–9, bits 9–12는 TC 1–4를 나타낸다. 나머지 bits는 0이다. Sensor state는 service task가 먼저 local snapshot으로 복사한 뒤 encode하여 서로 다른 acquisition 시점의 필드 혼합을 제한한다.
+Validity bits 0–8은 PT 1–9, bits 9–12는 TC 1–4를 나타낸다. 나머지 bits는 0이다. 각 acquisition task가 첫 유효 sample을 게시하기 전에는 해당 bit를 0으로 하고 값도 0으로 encode한다. Sensor state는 service task가 먼저 local snapshot으로 복사한 뒤 encode하여 서로 다른 acquisition 시점의 필드 혼합을 제한한다.
 
 ### 9.9 GET_HEALTH
 
 - port: 12
 - opcode: `0x01`
 - request length: 4 bytes
-- response length: 58 bytes
+- success response length: 58 bytes
+- error response length: 6 bytes
 
 | Offset | Size | Field |
 |---:|---:|---|
 | 0–5 | 6 | common response header |
 | 6–9 | 4 | `uptime_ms`, uint32 |
 | 10 | 1 | link state: 0 STOPPED, 1 RUNNING, 2 RECOVERING |
-| 11 | 1 | last error |
+| 11 | 1 | last error: 0 NONE, 1 UART, 2 DMA, 3 TX_TIMEOUT, 4 TX_STATE |
 | 12–13 | 2 | reserved, value 0 |
 | 14–57 | 44 | 11 × uint32 counters |
 
@@ -400,14 +417,14 @@ Interrupt RX 구현에서는 `dma_errors`가 항상 0이다. 향후 XDMAC 구현
 ## 10. Binary Service 처리 흐름
 
 1. service task가 CSP connection을 accept하고 destination port를 읽는다.
-2. packet이 최소 request header를 포함하는지 확인한다.
+2. packet이 최소 request header를 포함하는지 확인한다. 4 bytes보다 짧으면 malformed counter를 증가시키고 응답 없이 폐기한다.
 3. version, opcode, exact length를 확인한다.
 4. bytewise decode 후 mask, enum, reserved 값을 확인한다.
 5. validation이 모두 성공한 경우에만 domain API를 호출하거나 snapshot을 생성한다.
 6. 동일 transaction ID를 넣은 response를 송신한다.
 7. packet과 connection을 모든 경로에서 해제한다.
 
-잘못된 Binary request는 actuator를 변경하지 않고 가능한 경우 NACK를 반환한다. CSP CRC 오류와 유효 KISS frame이 되지 않은 데이터는 application service에 도달하지 않으므로 응답하지 않는다. Response buffer를 할당할 수 없으면 내부 counter를 증가시키고 connection을 정리한다.
+잘못된 Binary request는 actuator를 변경하지 않고 common 6-byte NACK를 반환한다. 단, common header보다 짧은 packet에는 응답하지 않는다. CSP CRC 오류와 유효 KISS frame이 되지 않은 데이터는 application service에 도달하지 않으므로 응답하지 않는다. Response buffer를 할당할 수 없으면 내부 counter를 증가시키고 connection을 정리한다.
 
 ## 11. SAMV71 RS485 Port
 
@@ -422,7 +439,7 @@ SAMV71 port는 `csp_rs485_port_ops_t` 전체를 구현한다.
 | `abort_receive` | RX 중지 및 오류 상태 clear |
 | `deinitialize` | USART disable, IRQ off, receive-safe 유지 |
 | `force_receive_mode` | RTOS 없이 DE=0/nRE=0 직접 GPIO write |
-| `reset_rx_position` | port-local RX 위치/통계 경계 reset |
+| `reset_rx_position` | port-local RX cursor와 임시 buffering 경계 reset; 누적 health counter는 유지 |
 | `transmit_frame` | whole-frame blocking TX와 deadline 처리 |
 
 ### 11.1 Generated PLIB 경계
