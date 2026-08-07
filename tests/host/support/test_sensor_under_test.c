@@ -1,6 +1,6 @@
 #include "test_sensor_under_test.h"
 
-#include "fakes/freertos/fake_freertos.h"
+#include "../fakes/freertos/fake_freertos.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
