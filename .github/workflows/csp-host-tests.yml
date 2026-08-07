@@ -28,6 +28,19 @@ jobs:
       - name: Run vendor verifier unit tests
         run: python -m unittest discover -s tools -p 'test_*.py' -v
       - name: Run normal CSP host regression tests
-        run: make -C tests/host clean test CC=gcc
+        shell: bash
+        run: |
+          set +e
+          output="$(make -C tests/host clean test CC=gcc 2>&1)"
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            tail_output="$(printf '%s\n' "$output" | tail -n 40)"
+            escaped_output=${tail_output//%/%25}
+            escaped_output=${escaped_output//$'\r'/%0D}
+            escaped_output=${escaped_output//$'\n'/%0A}
+            echo "::error title=Normal CSP host regression failed::$escaped_output"
+            exit "$status"
+          fi
       - name: Run ASan and UBSan CSP host regression tests
         run: make -C tests/host clean test CC=gcc SANITIZE=1
