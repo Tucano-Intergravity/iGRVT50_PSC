@@ -27,6 +27,8 @@ typedef struct SensorScan {
 
 void Sensor_UpdatePtRawAdcScan( const UInt16 *pRawAdc, UInt8 count );
 UInt32 Sensor_GetPtScanCount( void );
+void Sensor_UpdateTcRawScan( const int32_t *pRawCode, UInt8 count );
+UInt32 Sensor_GetTcScanCount( void );
 void Sensor_GetPtScan( sSensorPtScan *pScan );
 void Sensor_GetTcScan( sSensorTcScan *pScan );
 void Sensor_GetScan( sSensorScan *pScan );
