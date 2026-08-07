@@ -20,9 +20,23 @@ typedef struct {
     void (*delay_one_bit)(void);
 } samv71_rs485_hw_ops_t;
 
+typedef struct {
+    void (*enable_trace)(void);
+    uint32_t (*read_control)(void);
+    void (*write_control)(uint32_t value);
+    uint32_t (*read_counter)(void);
+    void (*fallback_delay_cycles)(uint32_t cycles);
+} samv71_rs485_guard_hw_t;
+
 #define SAMV71_RS485_STATUS_RX_READY (UINT32_C(1) << 0)
 #define SAMV71_RS485_STATUS_TX_READY (UINT32_C(1) << 1)
 #define SAMV71_RS485_STATUS_TX_EMPTY (UINT32_C(1) << 9)
+#define SAMV71_RS485_DWT_CTRL_CYCCNTENA (UINT32_C(1) << 0)
+#define SAMV71_RS485_DWT_CTRL_NOCYCCNT (UINT32_C(1) << 25)
+
+void samv71_rs485_delay_one_bit_with_guard_hw(
+    const samv71_rs485_guard_hw_t *guard_hw,
+    uint32_t system_core_clock);
 
 struct samv71_rs485_port_context {
     const samv71_rs485_hw_ops_t *hw;
