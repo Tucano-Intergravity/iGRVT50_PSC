@@ -139,6 +139,20 @@ void vApplicationIdleHook( void )
 
 /*-----------------------------------------------------------*/
 
+void vApplicationGetIdleTaskMemory(
+    StaticTask_t **task_tcb,
+    StackType_t **task_stack,
+    uint32_t *stack_size)
+{
+    static StaticTask_t idle_tcb;
+    static StackType_t idle_stack[configMINIMAL_STACK_SIZE];
+    *task_tcb = &idle_tcb;
+    *task_stack = idle_stack;
+    *stack_size = configMINIMAL_STACK_SIZE;
+}
+
+/*-----------------------------------------------------------*/
+
 /*-----------------------------------------------------------*/
 
 void vApplicationTickHook( void )
