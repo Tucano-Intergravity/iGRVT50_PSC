@@ -7,6 +7,7 @@ import ast
 import csv
 import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 
@@ -17,12 +18,27 @@ PIO_H_PATH = ROOT / "src/config/default/peripheral/pio/plib_pio.h"
 USART_PATH = ROOT / "src/config/default/peripheral/usart/plib_usart1.c"
 NVIC_PATH = ROOT / "src/config/default/peripheral/nvic/plib_nvic.c"
 INIT_PATH = ROOT / "src/config/default/initialization.c"
+MAIN_PATH = ROOT / "src/main.c"
 
 PIN_CONTRACT = {
     "PA22": ("UART1_DE", 22),
     "PA24": ("UART1_nRE", 24),
 }
 REQUIRED_PORTA_MASK = (1 << 22) | (1 << 24)
+TASK_START_APIS = (
+    "xTaskCreate",
+    "xTaskCreateStatic",
+    "xTaskCreateRestricted",
+    "xTaskCreateRestrictedStatic",
+    "MPU_xTaskCreate",
+    "MPU_xTaskCreateStatic",
+    "vTaskStartScheduler",
+    "MPU_vTaskStartScheduler",
+    "SYS_Tasks",
+)
+TASK_START_PATTERN = re.compile(
+    rf"\b(?:{'|'.join(re.escape(name) for name in TASK_START_APIS)})\s*\("
+)
 
 
 class Verification:
@@ -47,6 +63,102 @@ class Verification:
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
     return re.sub(r"//[^\r\n]*", "", text)
+
+
+def strip_inactive_if_zero(text: str) -> str:
+    output: list[str] = []
+    frames: list[tuple[bool, bool]] = []
+    active = True
+    directive_re = re.compile(
+        r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b(.*)$"
+    )
+
+    def blank(line: str) -> str:
+        return re.sub(r"[^\r\n]", " ", line)
+
+    def literal_zero(expression: str) -> bool:
+        expression = strip_comments(expression).strip()
+        while expression.startswith("(") and expression.endswith(")"):
+            expression = expression[1:-1].strip()
+        return re.fullmatch(r"0[uUlL]*", expression) is not None
+
+    for line in text.splitlines(keepends=True):
+        directive = directive_re.match(line.rstrip("\r\n"))
+        if directive is None:
+            output.append(line if active else blank(line))
+            continue
+
+        name, argument = directive.groups()
+        if name in ("if", "ifdef", "ifndef"):
+            known_false = name == "if" and literal_zero(argument)
+            frames.append((active, known_false))
+            active = active and not known_false
+        elif name == "elif" and frames:
+            parent_active, previous_known_false = frames[-1]
+            known_false = previous_known_false and literal_zero(argument)
+            frames[-1] = (parent_active, known_false)
+            active = parent_active and not known_false
+        elif name == "else" and frames:
+            parent_active, previous_known_false = frames[-1]
+            active = parent_active
+            frames[-1] = (parent_active, False)
+        elif name == "endif" and frames:
+            parent_active, _known_false = frames.pop()
+            active = parent_active
+        output.append(blank(line))
+    return "".join(output)
+
+
+def c_code_only(text: str) -> str:
+    characters = list(strip_inactive_if_zero(text))
+    state = "code"
+    index = 0
+    while index < len(characters):
+        character = characters[index]
+        following = characters[index + 1] if index + 1 < len(characters) else ""
+        if state == "code":
+            if character == "/" and following == "/":
+                characters[index] = characters[index + 1] = " "
+                state = "line-comment"
+                index += 2
+                continue
+            if character == "/" and following == "*":
+                characters[index] = characters[index + 1] = " "
+                state = "block-comment"
+                index += 2
+                continue
+            if character in ('"', "'"):
+                characters[index] = " "
+                state = "string" if character == '"' else "character"
+        elif state == "line-comment":
+            if character in "\r\n":
+                state = "code"
+            else:
+                characters[index] = " "
+        elif state == "block-comment":
+            if character == "*" and following == "/":
+                characters[index] = characters[index + 1] = " "
+                state = "code"
+                index += 2
+                continue
+            if character not in "\r\n":
+                characters[index] = " "
+        else:
+            quote = '"' if state == "string" else "'"
+            if character == "\\":
+                characters[index] = " "
+                if index + 1 < len(characters):
+                    if characters[index + 1] not in "\r\n":
+                        characters[index + 1] = " "
+                    index += 2
+                    continue
+            elif character == quote:
+                characters[index] = " "
+                state = "code"
+            elif character not in "\r\n":
+                characters[index] = " "
+        index += 1
+    return "".join(characters)
 
 
 def matching_delimiter(text: str, start: int, opening: str, closing: str) -> int:
@@ -129,19 +241,36 @@ def c_integer(expression: str) -> int:
 def verify_csv(check: Verification) -> None:
     try:
         with CSV_PATH.open("r", encoding="utf-8-sig", newline="") as source:
-            reader = csv.DictReader(source)
+            reader = csv.DictReader(source, strict=True)
             required_columns = {"Pin ID", "Custom Name", "Function", "Direction", "Latch"}
-            if reader.fieldnames is None or not required_columns.issubset(reader.fieldnames):
+            fieldnames = reader.fieldnames
+            if fieldnames is not None and len(fieldnames) != len(set(fieldnames)):
+                check.fail(
+                    CSV_PATH,
+                    "CSV header names must be unique",
+                    f"columns={fieldnames!r}",
+                )
+                return
+            if fieldnames is None or not required_columns.issubset(fieldnames):
                 check.fail(
                     CSV_PATH,
                     "CSV must expose the Harmony pin-contract columns",
-                    f"columns={reader.fieldnames!r}",
+                    f"columns={fieldnames!r}",
                 )
                 return
             rows = list(reader)
     except (OSError, UnicodeError, csv.Error) as exc:
         check.fail(CSV_PATH, "CSV must be present, readable, and parseable", str(exc))
         return
+
+    for line_number, row in enumerate(rows, start=2):
+        if None in row or any(row.get(fieldname) is None for fieldname in fieldnames):
+            check.fail(
+                CSV_PATH,
+                "CSV rows must contain exactly one field per header",
+                f"line={line_number}, row={row!r}",
+            )
+            return
 
     for pin_id, (custom_name, _bit) in PIN_CONTRACT.items():
         pin_rows = [row for row in rows if (row.get("Pin ID") or "").strip() == pin_id]
@@ -306,6 +435,39 @@ def strip_wrapping_parentheses(expression: str) -> str:
     return expression
 
 
+def split_top_level_operator(expression: str, operator: str) -> tuple[str, str] | None:
+    depth = 0
+    split_at: int | None = None
+    index = 0
+    while index < len(expression):
+        character = expression[index]
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif depth == 0 and expression.startswith(operator, index):
+            if split_at is not None:
+                return None
+            split_at = index
+            index += len(operator) - 1
+        index += 1
+    if depth != 0 or split_at is None:
+        return None
+    return expression[:split_at], expression[split_at + len(operator) :]
+
+
+def c_integer_literal(expression: str) -> int | None:
+    match = re.fullmatch(
+        r"(?i)(0x[0-9a-f]+|\d+)[ul]*", strip_wrapping_parentheses(expression)
+    )
+    if match is None:
+        return None
+    literal = match.group(1)
+    return int(literal, 16 if literal.lower().startswith("0x") else 10)
+
+
 def verify_write_macro(
     check: Verification, name: str, replacement: str, register: str, operator: str, bit: int
 ) -> None:
@@ -341,12 +503,28 @@ def verify_write_macro(
 
 
 def verify_get_macro(check: Verification, name: str, replacement: str, bit: int) -> None:
-    compact = re.sub(r"\s+", "", replacement)
-    register_ok = "PIOA_REGS->PIO_PDSR" in compact
-    shift_match = re.search(r">>(\d+)(?:[uUlL]+)?", compact)
-    mask_match = re.search(r"&(?:0x0*1|1)(?:[uUlL]+)?", compact, flags=re.IGNORECASE)
-    shift = int(shift_match.group(1)) if shift_match else None
-    if not register_ok or shift != bit or mask_match is None:
+    expression = re.sub(
+        r"\(\s*(?:u?int(?:8|16|32|64)_t|unsigned(?:\s+(?:char|short|int|long))?|size_t)\s*\)",
+        "",
+        replacement,
+    )
+    expression = strip_wrapping_parentheses(expression)
+    masked = split_top_level_operator(expression, "&")
+    shifted = (
+        split_top_level_operator(strip_wrapping_parentheses(masked[0]), ">>")
+        if masked is not None
+        else None
+    )
+    register_ok = (
+        shifted is not None
+        and re.fullmatch(
+            r"PIOA_REGS\s*->\s*PIO_PDSR", strip_wrapping_parentheses(shifted[0])
+        )
+        is not None
+    )
+    shift = c_integer_literal(shifted[1]) if shifted is not None else None
+    mask = c_integer_literal(masked[1]) if masked is not None else None
+    if not register_ok or shift != bit or mask != 1:
         check.fail(
             PIO_H_PATH,
             f"{name} must read PIOA PDSR bit {bit}",
@@ -412,11 +590,115 @@ def find_if_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def function_call_arguments(text: str, name: str) -> list[str]:
+    arguments: list[str] = []
+    pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
+    for match in pattern.finditer(text):
+        open_paren = text.find("(", match.start())
+        try:
+            close_paren = matching_delimiter(text, open_paren, "(", ")")
+        except ValueError:
+            continue
+        arguments.append(text[open_paren + 1 : close_paren])
+    return arguments
+
+
+def split_top_level_arguments(arguments: str) -> list[str] | None:
+    parts: list[str] = []
+    start = 0
+    depth = 0
+    for index, character in enumerate(arguments):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return None
+        elif character == "," and depth == 0:
+            parts.append(arguments[start:index].strip())
+            start = index + 1
+    if depth != 0:
+        return None
+    parts.append(arguments[start:].strip())
+    return parts
+
+
+def hook_false_condition(condition: str, hook_call: re.Pattern[str]) -> bool:
+    condition = strip_wrapping_parentheses(condition)
+    if condition.startswith("!"):
+        return hook_call.fullmatch(strip_wrapping_parentheses(condition[1:])) is not None
+
+    for operator, false_literal in (("==", False), ("!=", True)):
+        comparison = split_top_level_operator(condition, operator)
+        if comparison is None:
+            continue
+        left = strip_wrapping_parentheses(comparison[0])
+        right = strip_wrapping_parentheses(comparison[1])
+        if hook_call.fullmatch(left) is not None:
+            literal = right
+        elif hook_call.fullmatch(right) is not None:
+            literal = left
+        else:
+            return False
+        if false_literal:
+            return re.fullmatch(r"(?:true|1[uUlL]*)", literal) is not None
+        return re.fullmatch(r"(?:false|0[uUlL]*)", literal) is not None
+    return False
+
+
+def condition_is_nonzero(
+    condition: str, operand_matches: Callable[[str], bool]
+) -> bool:
+    condition = strip_wrapping_parentheses(condition)
+    comparison = split_top_level_operator(condition, "!=")
+    if comparison is None:
+        return operand_matches(condition)
+    left = strip_wrapping_parentheses(comparison[0])
+    right = strip_wrapping_parentheses(comparison[1])
+    if c_integer_literal(left) == 0:
+        return operand_matches(right)
+    if c_integer_literal(right) == 0:
+        return operand_matches(left)
+    return False
+
+
+def error_status_operand(expression: str) -> bool:
+    return strip_wrapping_parentheses(expression) == "errorStatus"
+
+
+def rx_ready_operand(expression: str) -> bool:
+    masked = split_top_level_operator(strip_wrapping_parentheses(expression), "&")
+    if masked is None:
+        return False
+    operands = {
+        re.sub(r"\s+", "", strip_wrapping_parentheses(masked[0])),
+        re.sub(r"\s+", "", strip_wrapping_parentheses(masked[1])),
+    }
+    return operands == {"USART1_REGS->US_CSR", "US_CSR_USART_RXRDY_Msk"}
+
+
+def hook_guards_fallback(
+    outer_block: str,
+    hook_call: re.Pattern[str],
+    fallback_call: re.Pattern[str],
+) -> bool:
+    guarded_bodies = [
+        block
+        for condition, block in find_if_blocks(outer_block)
+        if hook_false_condition(condition, hook_call)
+    ]
+    all_fallbacks = len(fallback_call.findall(outer_block))
+    guarded_fallbacks = sum(
+        len(fallback_call.findall(block)) for block in guarded_bodies
+    )
+    return all_fallbacks == 1 and guarded_fallbacks == 1
+
+
 def verify_usart(check: Verification) -> None:
     text = check.read_text(USART_PATH)
     if text is None:
         return
-    cleaned = strip_comments(text)
+    cleaned = c_code_only(text)
     signatures = {
         "USART1_UartCommRxReadyHook": r"\s*void\s*",
         "USART1_UartCommErrorHook": r"\s*uint32_t(?:\s+[A-Za-z_]\w*)?\s*",
@@ -457,32 +739,32 @@ def verify_usart(check: Verification) -> None:
         )
         return
     if_blocks = find_if_blocks(isr_bodies[0])
-    error_hook_re = re.compile(r"\bUSART1_UartCommErrorHook\s*\(\s*errorStatus\s*\)")
+    error_hook_re = re.compile(r"USART1_UartCommErrorHook\s*\(\s*errorStatus\s*\)")
+    error_fallback_re = re.compile(r"\bUSART1_ErrorClear\s*\(")
     error_path = any(
-        "errorStatus" in condition
-        and re.search(r"!=\s*0(?:x0+)?[uUlL]*\b", condition)
-        and error_hook_re.search(block)
+        condition_is_nonzero(condition, error_status_operand)
+        and hook_guards_fallback(block, error_hook_re, error_fallback_re)
         for condition, block in if_blocks
     )
     if not error_path:
         check.fail(
             USART_PATH,
-            "USART1 ISR error-status path must call USART1_UartCommErrorHook(errorStatus)",
-            "no matching guarded call found",
+            "USART1 ISR error-status path must let a false USART1_UartCommErrorHook result guard the legacy fallback",
+            "no matching guarded fallback found",
         )
 
-    rx_hook_re = re.compile(r"\bUSART1_UartCommRxReadyHook\s*\(\s*\)")
+    rx_hook_re = re.compile(r"USART1_UartCommRxReadyHook\s*\(\s*\)")
+    rx_fallback_re = re.compile(r"\bUSART1_ISR_RX_Handler\s*\(")
     rx_path = any(
-        "US_CSR" in condition
-        and "US_CSR_USART_RXRDY_Msk" in condition
-        and rx_hook_re.search(block)
+        condition_is_nonzero(condition, rx_ready_operand)
+        and hook_guards_fallback(block, rx_hook_re, rx_fallback_re)
         for condition, block in if_blocks
     )
     if not rx_path:
         check.fail(
             USART_PATH,
-            "USART1 ISR RX-ready path must call USART1_UartCommRxReadyHook()",
-            "no matching guarded call found",
+            "USART1 ISR RX-ready path must let a false USART1_UartCommRxReadyHook result guard the legacy fallback",
+            "no matching guarded fallback found",
         )
 
 
@@ -498,20 +780,23 @@ def verify_nvic(check: Verification) -> None:
             f"found={len(bodies)}",
         )
         return
-    matches = list(
-        re.finditer(
-            r"\bNVIC_SetPriority\s*\(\s*USART1_IRQn\s*,\s*([^,)]+)\s*\)",
-            bodies[0],
-        )
-    )
-    if len(matches) != 1:
+    priorities: list[str] = []
+    for arguments in function_call_arguments(bodies[0], "NVIC_SetPriority"):
+        parts = split_top_level_arguments(arguments)
+        if (
+            parts is not None
+            and len(parts) == 2
+            and strip_wrapping_parentheses(parts[0]) == "USART1_IRQn"
+        ):
+            priorities.append(parts[1])
+    if len(priorities) != 1:
         check.fail(
             NVIC_PATH,
             "NVIC_Initialize must set USART1_IRQn priority exactly once",
-            f"found={len(matches)}",
+            f"found={len(priorities)}",
         )
         return
-    expression = matches[0].group(1).strip()
+    expression = priorities[0]
     try:
         priority = c_integer(expression)
     except (SyntaxError, ValueError, TypeError) as exc:
@@ -530,10 +815,10 @@ def verify_nvic(check: Verification) -> None:
 
 
 def verify_initialization_order(check: Verification) -> None:
-    text = check.read_text(INIT_PATH)
-    if text is None:
+    init_text = check.read_text(INIT_PATH)
+    if init_text is None:
         return
-    bodies = function_bodies(strip_comments(text), "SYS_Initialize")
+    bodies = function_bodies(c_code_only(init_text), "SYS_Initialize")
     if len(bodies) != 1:
         check.fail(
             INIT_PATH,
@@ -550,14 +835,48 @@ def verify_initialization_order(check: Verification) -> None:
             f"found={len(pio_calls)}",
         )
         return
-    task_creation = re.search(
-        r"\b(?:xTaskCreate(?:Static)?|vTaskStartScheduler|SYS_Tasks)\s*\(", body
-    )
+    task_creation = TASK_START_PATTERN.search(body)
     if task_creation is not None and task_creation.start() < pio_calls[0].start():
         check.fail(
             INIT_PATH,
             "PIO_Initialize must run before task creation or scheduler startup",
             f"task API appears at offset {task_creation.start()}, PIO call at {pio_calls[0].start()}",
+        )
+
+    main_text = check.read_text(MAIN_PATH)
+    if main_text is None:
+        return
+    main_bodies = function_bodies(c_code_only(main_text), "main")
+    if len(main_bodies) != 1:
+        check.fail(
+            MAIN_PATH,
+            "main must have exactly one definition",
+            f"found={len(main_bodies)}",
+        )
+        return
+    main_body = main_bodies[0]
+    system_initialization = list(re.finditer(r"\bSYS_Initialize\s*\(", main_body))
+    if len(system_initialization) != 1:
+        check.fail(
+            MAIN_PATH,
+            "main must call SYS_Initialize exactly once",
+            f"found={len(system_initialization)}",
+        )
+        return
+    early_task = next(
+        (
+            match
+            for match in TASK_START_PATTERN.finditer(main_body)
+            if match.start() < system_initialization[0].start()
+        ),
+        None,
+    )
+    if early_task is not None:
+        check.fail(
+            MAIN_PATH,
+            "SYS_Initialize must run before task creation or scheduler startup",
+            "task API appears at offset "
+            f"{early_task.start()}, SYS_Initialize call at {system_initialization[0].start()}",
         )
 
 
