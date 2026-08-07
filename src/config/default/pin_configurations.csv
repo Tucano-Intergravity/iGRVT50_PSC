@@ -28,7 +28,7 @@
 34,PD30,PRES_SENSE1,AFEC0_AD0,n/a,n/a,No,Disabled,No,No,Disabled,Low
 35,PA7,XIN32_32K,PMC_XIN32,n/a,n/a,No,Disabled,No,No,Disabled,Low
 36,PA8,,Available,In,,,,,,,
-37,PA22,UART1_DE,GPIO,In,n/a,No,Disabled,No,No,Disabled,Low
+37,PA22,UART1_DE,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low
 38,PC1,,Available,In,,,,,,,
 39,PC2,,Available,In,,,,,,,
 40,PC3,,Available,In,,,,,,,
@@ -44,7 +44,7 @@
 53,PD26,DRV3946Q1_KILL_ALL,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low
 54,PC6,,Available,In,,,,,,,
 55,PD24,DRV3946Q1_EN2,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low
-56,PA24,UART1_nRE,USART1_RTS1,n/a,n/a,No,Disabled,No,No,Disabled,Low
+56,PA24,UART1_nRE,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low
 57,PD23,DRV3946Q1_EN1,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low
 58,PC5,PWM_CH17_TIOA6,TC2_TIOA6,n/a,n/a,No,Disabled,No,No,Disabled,Low
 59,PA25,,Available,In,,,,,,,

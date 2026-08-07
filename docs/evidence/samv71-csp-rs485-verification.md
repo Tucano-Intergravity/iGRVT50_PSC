@@ -88,3 +88,54 @@ Covered paths verified in the source checkout:
 
 Result: the dependency authorization gate is satisfied for those eight common
 files only. No csp-rs485 file was copied during this task.
+
+## Task 8: boot-safe RS485 direction pins
+
+Date: 2026-08-07
+
+The semantic Harmony contract verifier was added before changing the pin
+intent or generated PIO artifacts. Against revision `d72800f`, it exited 1 and
+reported the expected unsafe configuration:
+
+- PA22 `UART1_DE` was `GPIO,In,n/a` instead of `GPIO,Out,Low`.
+- PA24 `UART1_nRE` was `USART1_RTS1,n/a,n/a` instead of `GPIO,Out,Low`.
+- The evaluated PORTA output-enable/input-disable masks omitted PA22 and PA24.
+- The generated `UART1_DE_*` and `UART1_nRE_*` macro families were absent.
+
+The weak USART1 RX-ready/error hook definitions and guarded ISR calls, USART1
+IRQ priority 7, existing PIO-control masks, low PORTA latch, and
+`SYS_Initialize()` ordering passed during that RED run. The verifier-only RED
+is commit `1a251ae` (`test: guard Harmony CSP pin contract`).
+
+The generated result changes PORTA `PIO_OER` from `0x20000004` to
+`0x21400004`; the complementary `PIO_ODR` changes with it. PORTA `PIO_ODSR`
+remains `0x00000000`, so PA22 and PA24 are both output-enabled with their
+initial output-data latches low. The PORTA PDR/PER intent continues to keep
+both pins under PIO control.
+
+GREEN verification:
+
+```powershell
+python -B tools/verify_harmony_csp_contract.py
+# PASS Harmony CSP contract
+# exit 0
+
+& 'C:\Program Files\Microchip\MPLABX\v6.30\gnuBins\GnuWin32\bin\make.exe' -C sam_ctl.X -f Makefile CONF=default build
+# exit 0; no compiler warnings or errors
+
+& 'C:\Program Files\Microchip\MPLABX\v6.30\gnuBins\GnuWin32\bin\make.exe' -C sam_ctl.X -f Makefile CONF=default TYPE_IMAGE=DEBUG_RUN build
+# exit 0; no compiler warnings or errors
+```
+
+The build output contained only the normal linker `Info: Loading file` line.
+`git diff --exit-code d72800f` returned 0 for `plib_usart1.c`, `plib_nvic.c`,
+`sam_ctl.X/nbproject/configurations.xml`, and the CMake production graph. A
+graph search returned no Task 7 port or Task 9 runtime/service source, while
+legacy `iGRVT50/source/uartcomm.c` remains in the MPLAB graph as required
+until the atomic Task 10 cutover.
+
+Physical logic-analyzer verification is pending Task 12 because no logic
+analyzer is available in this execution environment. Task 12 must capture
+DE=0 and nRE=0 from pin initialization through application startup and repeat
+the CSP-specific timing capture after the Task 10 stack cutover. No physical
+measurement is claimed here.
