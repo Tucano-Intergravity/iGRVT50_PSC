@@ -21,6 +21,20 @@
 #define SAMV71_RS485_DIRECTION_MASK                                       \
     (SAMV71_RS485_DE_MASK | SAMV71_RS485_NRE_MASK)
 #define SAMV71_RS485_BAUD UINT32_C(921600)
+#define SAMV71_RS485_DWT_UNLOCK_KEY UINT32_C(0xc5acce55)
+
+#ifndef CSP_RS485_HOST_TEST
+#ifndef SystemCoreClock
+#define SystemCoreClock CPU_CLOCK_FREQUENCY
+#endif
+
+_Static_assert(
+    SAMV71_RS485_DWT_CTRL_CYCCNTENA == DWT_CTRL_CYCCNTENA_Msk,
+    "DWT cycle-counter enable mask mismatch");
+_Static_assert(
+    SAMV71_RS485_DWT_CTRL_NOCYCCNT == DWT_CTRL_NOCYCCNT_Msk,
+    "DWT unavailable mask mismatch");
+#endif
 
 static uint32_t target_status(void)
 {
@@ -99,21 +113,89 @@ static uint32_t target_now_ms(void)
 #endif
 }
 
+void samv71_rs485_delay_one_bit_with_guard_hw(
+    const samv71_rs485_guard_hw_t *guard_hw,
+    uint32_t system_core_clock)
+{
+    const uint32_t guard_cycles =
+        (system_core_clock / SAMV71_RS485_BAUD)
+        + (((system_core_clock % SAMV71_RS485_BAUD) != 0U) ? 1U : 0U);
+
+    guard_hw->enable_trace();
+    uint32_t control = guard_hw->read_control();
+    if ((control & SAMV71_RS485_DWT_CTRL_NOCYCCNT) != 0U) {
+        guard_hw->fallback_delay_cycles(guard_cycles);
+        return;
+    }
+
+    control |= SAMV71_RS485_DWT_CTRL_CYCCNTENA;
+    guard_hw->write_control(control);
+    if ((guard_hw->read_control() & SAMV71_RS485_DWT_CTRL_CYCCNTENA) == 0U) {
+        guard_hw->fallback_delay_cycles(guard_cycles);
+        return;
+    }
+
+    const uint32_t start = guard_hw->read_counter();
+    uint32_t previous = start;
+    for (uint32_t poll = 0U; poll < guard_cycles; ++poll) {
+        const uint32_t current = guard_hw->read_counter();
+        if ((uint32_t) (current - start) >= guard_cycles) {
+            return;
+        }
+        if (current == previous) {
+            break;
+        }
+        previous = current;
+    }
+
+    guard_hw->fallback_delay_cycles(guard_cycles);
+}
+
+#ifndef CSP_RS485_HOST_TEST
+static void target_guard_enable_trace(void)
+{
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    DWT->LAR = SAMV71_RS485_DWT_UNLOCK_KEY;
+}
+
+static uint32_t target_guard_read_control(void)
+{
+    return DWT->CTRL;
+}
+
+static void target_guard_write_control(uint32_t value)
+{
+    DWT->CTRL = value;
+}
+
+static uint32_t target_guard_read_counter(void)
+{
+    return DWT->CYCCNT;
+}
+
+static void target_guard_fallback_delay_cycles(uint32_t cycles)
+{
+    while (cycles > 0U) {
+        __NOP();
+        --cycles;
+    }
+}
+
+static const samv71_rs485_guard_hw_t target_guard_hw = {
+    .enable_trace = target_guard_enable_trace,
+    .read_control = target_guard_read_control,
+    .write_control = target_guard_write_control,
+    .read_counter = target_guard_read_counter,
+    .fallback_delay_cycles = target_guard_fallback_delay_cycles,
+};
+#endif
+
 static void target_delay_one_bit(void)
 {
 #ifndef CSP_RS485_HOST_TEST
-#ifndef SystemCoreClock
-#define SystemCoreClock CPU_CLOCK_FREQUENCY
-#endif
-    const uint32_t guard_cycles =
-        ((uint32_t) SystemCoreClock + SAMV71_RS485_BAUD - 1U)
-        / SAMV71_RS485_BAUD;
-
-    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
-    DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
-    const uint32_t start = DWT->CYCCNT;
-    while ((uint32_t) (DWT->CYCCNT - start) < guard_cycles) {
-    }
+    samv71_rs485_delay_one_bit_with_guard_hw(
+        &target_guard_hw,
+        (uint32_t) SystemCoreClock);
 #endif
 }
 
@@ -184,6 +266,7 @@ static csp_rs485_port_result_t port_initialize(void *opaque_context)
 {
     samv71_rs485_port_context_t *const context = opaque_context;
     if (!context_has_complete_hw(context)) {
+        force_receive(context);
         return CSP_RS485_PORT_ERROR;
     }
 
@@ -278,19 +361,15 @@ static void port_force_receive_mode(void *opaque_context)
 
 static void port_reset_rx_position(void *opaque_context)
 {
-    samv71_rs485_port_context_t *const context = opaque_context;
-    if (context_has_complete_hw(context)) {
-        context->hw->reset_status_and_flush();
-        context->hw->reset_rx();
-        force_receive(context);
-    }
+    (void) opaque_context;
 }
 
-static bool deadline_expired(
+static bool timeout_expired(
     const samv71_rs485_port_context_t *context,
-    uint32_t deadline)
+    uint32_t start,
+    uint32_t timeout_ms)
 {
-    return (int32_t) (context->hw->now_ms() - deadline) >= 0;
+    return (uint32_t) (context->hw->now_ms() - start) >= timeout_ms;
 }
 
 static csp_rs485_port_result_t port_transmit_frame(
@@ -301,6 +380,7 @@ static csp_rs485_port_result_t port_transmit_frame(
 {
     samv71_rs485_port_context_t *const context = opaque_context;
     if (!context_has_complete_hw(context)) {
+        force_receive(context);
         return CSP_RS485_PORT_ERROR;
     }
     if (!context->initialized) {
@@ -313,7 +393,7 @@ static csp_rs485_port_result_t port_transmit_frame(
     }
 
     const bool restore_rx_irq = context->rx_irq_enabled;
-    const uint32_t deadline = context->hw->now_ms() + timeout_ms;
+    const uint32_t start = context->hw->now_ms();
     csp_rs485_port_result_t result = CSP_RS485_PORT_OK;
 
     context->hw->set_rx_irq(false);
@@ -323,7 +403,7 @@ static csp_rs485_port_result_t port_transmit_frame(
 
     for (size_t index = 0U; index < frame_length; ++index) {
         while ((context->hw->status() & SAMV71_RS485_STATUS_TX_READY) == 0U) {
-            if (deadline_expired(context, deadline)) {
+            if (timeout_expired(context, start, timeout_ms)) {
                 result = CSP_RS485_PORT_TIMEOUT;
                 goto cleanup;
             }
@@ -332,7 +412,7 @@ static csp_rs485_port_result_t port_transmit_frame(
     }
 
     while ((context->hw->status() & SAMV71_RS485_STATUS_TX_EMPTY) == 0U) {
-        if (deadline_expired(context, deadline)) {
+        if (timeout_expired(context, start, timeout_ms)) {
             result = CSP_RS485_PORT_TIMEOUT;
             goto cleanup;
         }

@@ -30,15 +30,6 @@ typedef struct {
 
 static fake_guard_hw_t fake_guard;
 
-/* RED seam: replaced by the strong production helper in the GREEN commit. */
-void __attribute__((weak)) samv71_rs485_delay_one_bit_with_guard_hw(
-    const samv71_rs485_guard_hw_t *guard_hw,
-    uint32_t system_core_clock)
-{
-    (void) guard_hw;
-    (void) system_core_clock;
-}
-
 void __real_csp_rs485_freertos_rx_from_isr(
     const uint8_t *bytes,
     size_t length);
