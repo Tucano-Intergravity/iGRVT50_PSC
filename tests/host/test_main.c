@@ -30,6 +30,8 @@ extern const test_case_t sensor_publication_tests[];
 extern const size_t sensor_publication_test_count;
 extern const test_case_t opu_tc_scan_tests[];
 extern const size_t opu_tc_scan_test_count;
+extern const test_case_t samv71_rs485_port_tests[];
+extern const size_t samv71_rs485_port_test_count;
 
 typedef struct {
     const test_case_t *tests;
@@ -117,6 +119,7 @@ int main(int argc, char **argv)
         {sam_csp_domain_tests, sam_csp_domain_test_count},
         {sensor_publication_tests, sensor_publication_test_count},
         {opu_tc_scan_tests, opu_tc_scan_test_count},
+        {samv71_rs485_port_tests, samv71_rs485_port_test_count},
     };
 
     for (size_t group = 0U; group < (sizeof(groups) / sizeof(groups[0])); ++group) {

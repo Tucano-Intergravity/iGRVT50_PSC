@@ -11,6 +11,8 @@ CC ?= cc
 
 COMMON_CPPFLAGS := \
 	-I$(REPO_ROOT)/tests/host/fakes/domain/include \
+	-I$(REPO_ROOT)/tests/host/fakes/samv71 \
+	-I$(REPO_ROOT)/sam_ctl.X/iGRVT50/source \
 	-DCSP_RS485_HOST_TEST \
 	-I$(REPO_ROOT)/tests/host/fakes/freertos/include \
 	-I$(REPO_ROOT)/tests/host/config/include \
@@ -41,7 +43,11 @@ THIRD_PARTY_CFLAGS := \
 	-Wno-unused-parameter
 
 LDLIBS := -pthread -lrt -lutil
-LDFLAGS += -Wl,--wrap=csp_qfifo_write
+LDFLAGS += \
+	-Wl,--wrap=csp_qfifo_write \
+	-Wl,--wrap=csp_rs485_freertos_rx_from_isr \
+	-Wl,--wrap=csp_rs485_freertos_mark_rx_discontinuity_from_isr \
+	-Wl,--wrap=csp_rs485_link_report_fault_from_isr
 
 ifeq ($(SANITIZE),1)
 SANITIZER_FLAGS := -fsanitize=address,undefined -fno-omit-frame-pointer
@@ -62,6 +68,7 @@ PROJECT_SOURCES := \
 	tests/host/fakes/fake_port.c \
 	tests/host/fakes/domain/fake_sam_csp_domain.c \
 	tests/host/fakes/fake_opu_tc_scan.c \
+	tests/host/fakes/samv71/fake_samv71_hw.c \
 	tests/host/fakes/freertos/fake_freertos.c \
 	tests/host/test_main.c \
 	tests/host/test_host_profile.c \
@@ -74,6 +81,7 @@ PROJECT_SOURCES := \
 	tests/host/test_sam_csp_domain.c \
 	tests/host/test_sensor_publication.c \
 	tests/host/test_opu_tc_scan.c \
+	tests/host/test_samv71_rs485_port.c \
 	tests/host/support/test_sensor_under_test.c \
 	tests/host/support/host_csp.c
 
@@ -87,6 +95,11 @@ SAM_CSP_DOMAIN_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_domain.c
 ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_DOMAIN_SOURCE)),)
 COMMON_CPPFLAGS += -DSAM_CSP_DOMAIN_HAVE_IMPLEMENTATION=1
 PROJECT_SOURCES += $(SAM_CSP_DOMAIN_SOURCE)
+endif
+
+SAMV71_RS485_PORT_SOURCE := sam_ctl.X/iGRVT50/source/csp/samv71_rs485_port.c
+ifneq ($(wildcard $(REPO_ROOT)/$(SAMV71_RS485_PORT_SOURCE)),)
+PROJECT_SOURCES += $(SAMV71_RS485_PORT_SOURCE)
 endif
 
 LIBCSP_SOURCES := \
