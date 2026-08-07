@@ -250,6 +250,9 @@ static void command_port_reports_exact_bad_header_details(void)
     static const uint8_t short_mode[] = {
         0x01U, 0x02U, 0x12U, 0x34U,
     };
+    static const uint8_t reserved_byte_set[] = {
+        0x01U, 0x01U, 0x12U, 0x34U, 0U, 0U, 0U, 0U, 0U, 1U,
+    };
     fake_domain_observations_t observed;
 
     reset_dispatch_fakes();
@@ -277,6 +280,12 @@ static void command_port_reports_exact_bad_header_details(void)
         sizeof(short_mode),
         SAM_CSP_STATUS_BAD_LENGTH,
         5U);
+    assert_status_response(
+        SAM_CSP_COMMAND_PORT,
+        reserved_byte_set,
+        sizeof(reserved_byte_set),
+        SAM_CSP_STATUS_INVALID_ARGUMENT,
+        9U);
     fake_domain_get_observations(&observed);
     TEST_ASSERT_EQ_SIZE(0U, observed.apply_outputs_calls);
     TEST_ASSERT_EQ_SIZE(0U, observed.request_mode_calls);
@@ -495,10 +504,38 @@ static void rejected_inputs_leave_output_and_domain_untouched(void)
             &response_length));
     TEST_ASSERT_EQ_SIZE(0xCAFEU, response_length);
     TEST_ASSERT_TRUE(memcmp(expected, response, sizeof(response)) == 0);
+
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_DISPATCH_DROP,
+        sam_csp_service_dispatch(
+            SAM_CSP_PEER_ADDRESS,
+            SAM_CSP_TELEMETRY_PORT,
+            valid_get_snapshot,
+            sizeof(valid_get_snapshot),
+            response,
+            SAM_CSP_SNAPSHOT_RESPONSE_LENGTH - 1U,
+            &response_length));
+    TEST_ASSERT_EQ_SIZE(0xCAFEU, response_length);
+    TEST_ASSERT_TRUE(memcmp(expected, response, sizeof(response)) == 0);
+
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_DISPATCH_DROP,
+        sam_csp_service_dispatch(
+            SAM_CSP_PEER_ADDRESS,
+            SAM_CSP_DIAGNOSTIC_PORT,
+            valid_get_health,
+            sizeof(valid_get_health),
+            response,
+            SAM_CSP_HEALTH_RESPONSE_LENGTH - 1U,
+            &response_length));
+    TEST_ASSERT_EQ_SIZE(0xCAFEU, response_length);
+    TEST_ASSERT_TRUE(memcmp(expected, response, sizeof(response)) == 0);
     fake_domain_get_observations(&observed);
     TEST_ASSERT_EQ_SIZE(0U, observed.apply_outputs_calls);
     TEST_ASSERT_EQ_SIZE(0U, observed.request_mode_calls);
     TEST_ASSERT_EQ_SIZE(0U, observed.get_snapshot_calls);
+    TEST_ASSERT_EQ_SIZE(0U, observed.tick_count_calls);
+    TEST_ASSERT_EQ_SIZE(0U, observed.link_health_calls);
 }
 
 static void ping_delegates_but_reserved_and_unknown_ports_drop(void)
