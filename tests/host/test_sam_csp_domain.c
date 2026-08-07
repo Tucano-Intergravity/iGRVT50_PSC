@@ -256,6 +256,9 @@ static sSensorScan populated_sensor_scan(void)
 static void assert_snapshot_dependencies_called_once(void)
 {
     fake_sam_csp_domain_observations_t observations;
+    size_t pt_count_event = SIZE_MAX;
+    size_t tc_count_event = SIZE_MAX;
+    size_t sensor_scan_event = SIZE_MAX;
 
     get_observations(&observations);
     TEST_ASSERT_EQ_SIZE(1U, observations.state_snapshot_calls);
@@ -263,6 +266,26 @@ static void assert_snapshot_dependencies_called_once(void)
     TEST_ASSERT_EQ_SIZE(1U, observations.pt_count_calls);
     TEST_ASSERT_EQ_SIZE(1U, observations.tc_count_calls);
     TEST_ASSERT_EQ_SIZE(1U, observations.tick_count_calls);
+    TEST_ASSERT_EQ_SIZE(5U, observations.dependency_event_count);
+    for (size_t index = 0U;
+         index < observations.dependency_event_count;
+         ++index) {
+        switch (observations.dependency_events[index]) {
+            case FAKE_SAM_CSP_DEPENDENCY_PT_COUNT:
+                pt_count_event = index;
+                break;
+            case FAKE_SAM_CSP_DEPENDENCY_TC_COUNT:
+                tc_count_event = index;
+                break;
+            case FAKE_SAM_CSP_DEPENDENCY_SENSOR_SCAN:
+                sensor_scan_event = index;
+                break;
+            default:
+                break;
+        }
+    }
+    TEST_ASSERT_TRUE(pt_count_event < tc_count_event);
+    TEST_ASSERT_TRUE(tc_count_event < sensor_scan_event);
 }
 
 static void get_snapshot_zeros_unpublished_sensor_families(void)
@@ -378,6 +401,24 @@ static void get_snapshot_maps_all_published_values_modes_and_time(void)
     assert_snapshot_dependencies_called_once();
 }
 
+static void get_snapshot_uses_wide_intermediate_for_tick_to_ms(void)
+{
+    sam_csp_snapshot_t snapshot = {0};
+
+    _Static_assert(
+        configTICK_RATE_HZ == 100U,
+        "overflow fixture is calibrated for the host fake tick rate");
+
+    fake_sam_csp_domain_reset();
+    fake_sam_csp_domain_set_tick_count(UINT32_C(400000000));
+
+    TEST_ASSERT_EQ_SIZE(
+        SAM_CSP_DOMAIN_OK,
+        sam_csp_domain_get_snapshot(&snapshot));
+    TEST_ASSERT_EQ_SIZE(UINT32_C(4000000000), snapshot.sample_time_ms);
+    assert_snapshot_dependencies_called_once();
+}
+
 const test_case_t sam_csp_domain_tests[] = {
     {"sam_csp_domain", "apply_outputs_rejects_null_without_actuator_calls", apply_outputs_rejects_null_without_actuator_calls},
     {"sam_csp_domain", "apply_outputs_prevalidates_every_field_before_hardware", apply_outputs_prevalidates_every_field_before_hardware},
@@ -391,6 +432,7 @@ const test_case_t sam_csp_domain_tests[] = {
     {"sam_csp_domain", "get_snapshot_publishes_only_pt_after_first_pt_scan", get_snapshot_publishes_only_pt_after_first_pt_scan},
     {"sam_csp_domain", "get_snapshot_publishes_only_tc_after_first_tc_scan", get_snapshot_publishes_only_tc_after_first_tc_scan},
     {"sam_csp_domain", "get_snapshot_maps_all_published_values_modes_and_time", get_snapshot_maps_all_published_values_modes_and_time},
+    {"sam_csp_domain", "get_snapshot_uses_wide_intermediate_for_tick_to_ms", get_snapshot_uses_wide_intermediate_for_tick_to_ms},
 };
 
 const size_t sam_csp_domain_test_count =

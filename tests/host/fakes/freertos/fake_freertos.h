@@ -31,6 +31,10 @@ typedef struct {
     size_t task_block_calls;
     size_t mutex_wait_calls;
     size_t notify_wait_calls;
+    size_t task_critical_enter_calls;
+    size_t task_critical_exit_calls;
+    size_t task_critical_nesting;
+    size_t task_critical_max_nesting;
     uint32_t last_wait_ticks;
 } fake_freertos_observations_t;
 
@@ -55,5 +59,6 @@ void fake_freertos_set_task_notify_runs_task(bool runs_task);
 void fake_freertos_set_mutex_wait_hook(fake_freertos_hook_t hook);
 bool fake_freertos_mutex_is_available(void);
 bool fake_freertos_run_task_until_blocked(void);
+bool fake_freertos_task_in_critical(void);
 
 #endif

@@ -15,6 +15,7 @@ COMMON_CPPFLAGS := \
 	-I$(REPO_ROOT)/tests/host/fakes/freertos/include \
 	-I$(REPO_ROOT)/tests/host/config/include \
 	-I$(REPO_ROOT)/sam_ctl.X/iGRVT50/header \
+	-I$(REPO_ROOT)/src \
 	-I$(CSP_RS485_DIR)/include \
 	-I$(CSP_RS485_DIR)/src \
 	-isystem $(LIBCSP_DIR)/include
@@ -60,6 +61,7 @@ PROJECT_SOURCES := \
 	third_party/csp-rs485/src/csp_rs485_freertos.c \
 	tests/host/fakes/fake_port.c \
 	tests/host/fakes/domain/fake_sam_csp_domain.c \
+	tests/host/fakes/fake_opu_tc_scan.c \
 	tests/host/fakes/freertos/fake_freertos.c \
 	tests/host/test_main.c \
 	tests/host/test_host_profile.c \
@@ -70,6 +72,9 @@ PROJECT_SOURCES := \
 	tests/host/test_freertos_runtime.c \
 	tests/host/test_sam_csp_codec.c \
 	tests/host/test_sam_csp_domain.c \
+	tests/host/test_sensor_publication.c \
+	tests/host/test_opu_tc_scan.c \
+	tests/host/support/test_sensor_under_test.c \
 	tests/host/support/host_csp.c
 
 SAM_CSP_CODEC_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_codec.c

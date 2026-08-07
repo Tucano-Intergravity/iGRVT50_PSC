@@ -13,6 +13,16 @@ static UInt32 pt_scan_count;
 static UInt32 tc_scan_count;
 static TickType_t tick_count;
 
+static void record_dependency_event(fake_sam_csp_dependency_event_t event)
+{
+    if (observations.dependency_event_count
+        < FAKE_SAM_CSP_DOMAIN_MAX_DEPENDENCY_EVENTS) {
+        observations.dependency_events[observations.dependency_event_count] =
+            event;
+    }
+    ++observations.dependency_event_count;
+}
+
 static void record_actuator_call(
     fake_sam_csp_actuator_t actuator,
     UInt8 channel,
@@ -107,6 +117,7 @@ UInt8 StateMachine_RequestMode(eStateMachineMode mode)
 
 void StateMachine_GetSnapshot(sStateMachineSnapshot *snapshot)
 {
+    record_dependency_event(FAKE_SAM_CSP_DEPENDENCY_STATE_SNAPSHOT);
     ++observations.state_snapshot_calls;
     if (snapshot != NULL) {
         *snapshot = state_snapshot;
@@ -115,6 +126,7 @@ void StateMachine_GetSnapshot(sStateMachineSnapshot *snapshot)
 
 void Sensor_GetScan(sSensorScan *scan)
 {
+    record_dependency_event(FAKE_SAM_CSP_DEPENDENCY_SENSOR_SCAN);
     ++observations.sensor_scan_calls;
     if (scan != NULL) {
         *scan = sensor_snapshot;
@@ -123,18 +135,21 @@ void Sensor_GetScan(sSensorScan *scan)
 
 UInt32 Sensor_GetPtScanCount(void)
 {
+    record_dependency_event(FAKE_SAM_CSP_DEPENDENCY_PT_COUNT);
     ++observations.pt_count_calls;
     return pt_scan_count;
 }
 
 UInt32 Sensor_GetTcScanCount(void)
 {
+    record_dependency_event(FAKE_SAM_CSP_DEPENDENCY_TC_COUNT);
     ++observations.tc_count_calls;
     return tc_scan_count;
 }
 
 TickType_t xTaskGetTickCount(void)
 {
+    record_dependency_event(FAKE_SAM_CSP_DEPENDENCY_TICK_COUNT);
     ++observations.tick_count_calls;
     return tick_count;
 }

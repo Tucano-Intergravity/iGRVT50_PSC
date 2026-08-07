@@ -64,6 +64,7 @@ void fake_freertos_reset(void)
 void fake_freertos_clear_observations(void)
 {
     memset(&observations, 0, sizeof(observations));
+    observations.task_critical_nesting = critical_nesting;
 }
 
 void fake_freertos_set_isr_task_woken(bool task_woken)
@@ -163,13 +164,20 @@ void fake_freertos_yield_from_isr(BaseType_t task_woken)
 void fake_freertos_task_enter_critical(void)
 {
     ++critical_nesting;
+    ++observations.task_critical_enter_calls;
+    observations.task_critical_nesting = critical_nesting;
+    if (critical_nesting > observations.task_critical_max_nesting) {
+        observations.task_critical_max_nesting = critical_nesting;
+    }
 }
 
 void fake_freertos_task_exit_critical(void)
 {
+    ++observations.task_critical_exit_calls;
     if (critical_nesting > 0U) {
         --critical_nesting;
     }
+    observations.task_critical_nesting = critical_nesting;
     if ((critical_nesting == 0U) && (critical_exit_hook != NULL)
         && (critical_exit_hook_after > 0U)) {
         --critical_exit_hook_after;
@@ -181,6 +189,11 @@ void fake_freertos_task_exit_critical(void)
         ++observations.critical_exit_hook_calls;
         hook();
     }
+}
+
+bool fake_freertos_task_in_critical(void)
+{
+    return critical_nesting != 0U;
 }
 
 UBaseType_t fake_freertos_task_enter_critical_from_isr(void)

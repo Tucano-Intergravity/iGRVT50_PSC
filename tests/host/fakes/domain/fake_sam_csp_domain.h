@@ -10,6 +10,7 @@
 #include <stdint.h>
 
 #define FAKE_SAM_CSP_DOMAIN_MAX_ACTUATOR_CALLS 32U
+#define FAKE_SAM_CSP_DOMAIN_MAX_DEPENDENCY_EVENTS 8U
 
 typedef enum {
     FAKE_SAM_CSP_ACTUATOR_LPV = 0,
@@ -24,6 +25,14 @@ typedef struct {
     uint8_t value;
 } fake_sam_csp_actuator_call_t;
 
+typedef enum {
+    FAKE_SAM_CSP_DEPENDENCY_PT_COUNT = 0,
+    FAKE_SAM_CSP_DEPENDENCY_TC_COUNT,
+    FAKE_SAM_CSP_DEPENDENCY_SENSOR_SCAN,
+    FAKE_SAM_CSP_DEPENDENCY_STATE_SNAPSHOT,
+    FAKE_SAM_CSP_DEPENDENCY_TICK_COUNT,
+} fake_sam_csp_dependency_event_t;
+
 typedef struct {
     fake_sam_csp_actuator_call_t
         actuator_calls[FAKE_SAM_CSP_DOMAIN_MAX_ACTUATOR_CALLS];
@@ -35,6 +44,9 @@ typedef struct {
     size_t pt_count_calls;
     size_t tc_count_calls;
     size_t tick_count_calls;
+    fake_sam_csp_dependency_event_t
+        dependency_events[FAKE_SAM_CSP_DOMAIN_MAX_DEPENDENCY_EVENTS];
+    size_t dependency_event_count;
 } fake_sam_csp_domain_observations_t;
 
 void fake_sam_csp_domain_reset(void);

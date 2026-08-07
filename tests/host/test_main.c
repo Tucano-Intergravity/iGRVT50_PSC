@@ -26,6 +26,10 @@ extern const test_case_t sam_csp_codec_tests[];
 extern const size_t sam_csp_codec_test_count;
 extern const test_case_t sam_csp_domain_tests[];
 extern const size_t sam_csp_domain_test_count;
+extern const test_case_t sensor_publication_tests[];
+extern const size_t sensor_publication_test_count;
+extern const test_case_t opu_tc_scan_tests[];
+extern const size_t opu_tc_scan_test_count;
 
 typedef struct {
     const test_case_t *tests;
@@ -111,6 +115,8 @@ int main(int argc, char **argv)
         {freertos_runtime_tests, freertos_runtime_test_count},
         {sam_csp_codec_tests, sam_csp_codec_test_count},
         {sam_csp_domain_tests, sam_csp_domain_test_count},
+        {sensor_publication_tests, sensor_publication_test_count},
+        {opu_tc_scan_tests, opu_tc_scan_test_count},
     };
 
     for (size_t group = 0U; group < (sizeof(groups) / sizeof(groups[0])); ++group) {

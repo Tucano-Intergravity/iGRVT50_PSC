@@ -29,6 +29,7 @@
 /* --- User includes --- */
 #include "sam_ctl.h"
 #include "sensor.h"
+#include "opu_tc_scan.h"
 #include "lpsolvalve.h"
 #include "hpsolvalve.h"
 #include "uartcomm.h"
@@ -150,7 +151,6 @@ static void TcTask(void *p)
 {
     const TickType_t xPeriodTicks = pdMS_TO_TICKS( TC_TASK_PERIOD_MS );
     TickType_t xLastWakeTime;
-    int32_t tcRaw[SENSOR_TC_CHANNEL_COUNT];
 
     ADS1263_Init();
     xLastWakeTime = xTaskGetTickCount();
@@ -159,15 +159,7 @@ static void TcTask(void *p)
 	{
         /* [수정] ADS1263은 U3 1개만 실장. 이전 2칩(ADS#2/CS=PD28)은 펌웨어 가공 -> 제거. */
         ADS1263_SetDevice( 1 );
-        stTcTemp[0].fTempCh1 = ADS1263_GetTemperatureTask( 0 );   /* AIN0/1 = TC_SEN1 */
-        stTcTemp[0].fTempCh2 = ADS1263_GetTemperatureTask( 1 );   /* AIN2/3 = TC_SEN2 */
-        stTcTemp[0].fTempCh3 = ADS1263_GetTemperatureTask( 2 );   /* AIN4/5 = TC_SEN3 */
-        stTcTemp[0].fTempCh4 = ADS1263_GetTemperatureTask( 3 );   /* AIN6/7 = TC_SEN4 */
-        tcRaw[0] = ADS1263_GetRawCode( 1U, 0U );
-        tcRaw[1] = ADS1263_GetRawCode( 1U, 1U );
-        tcRaw[2] = ADS1263_GetRawCode( 1U, 2U );
-        tcRaw[3] = ADS1263_GetRawCode( 1U, 3U );
-        Sensor_UpdateTcRawScan( tcRaw, SENSOR_TC_CHANNEL_COUNT );
+        OpuTcScan_AcquireAndPublish( &stTcTemp[0] );
         stTcTemp[0].fTempCJ  = ADS1263_GetTemperatureTask( 4 );   /* 내부 die온도 = CJ */
         vTaskDelayUntil( &xLastWakeTime, xPeriodTicks );
 	}
