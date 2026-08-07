@@ -23,6 +23,8 @@ enum {
     SAM_CSP_DETAIL_APPLY_MODE = 2U,
     SAM_CSP_DETAIL_SNAPSHOT = 2U,
     SAM_CSP_DETAIL_UNSPECIFIED = 255U,
+    SAM_CSP_SET_MODE_MODE_OFFSET = 4U,
+    SAM_CSP_SET_MODE_MAX_VALUE = 3U,
 };
 
 typedef struct {
@@ -92,20 +94,6 @@ static bool is_application_port(uint8_t port)
     return (port == SAM_CSP_COMMAND_PORT)
         || (port == SAM_CSP_TELEMETRY_PORT)
         || (port == SAM_CSP_DIAGNOSTIC_PORT);
-}
-
-static size_t maximum_response_length(uint8_t port)
-{
-    switch (port) {
-        case SAM_CSP_COMMAND_PORT:
-            return SAM_CSP_RESPONSE_HEADER_LENGTH;
-        case SAM_CSP_TELEMETRY_PORT:
-            return SAM_CSP_SNAPSHOT_RESPONSE_LENGTH;
-        case SAM_CSP_DIAGNOSTIC_PORT:
-            return SAM_CSP_HEALTH_RESPONSE_LENGTH;
-        default:
-            return 0U;
-    }
 }
 
 static uint16_t request_transaction_id(const uint8_t *request)
@@ -250,10 +238,20 @@ static sam_csp_dispatch_action_t dispatch_command(
             response_capacity,
             response_length);
     }
+    if (request[SAM_CSP_SET_MODE_MODE_OFFSET] > SAM_CSP_SET_MODE_MAX_VALUE) {
+        return emit_status(
+            opcode,
+            transaction_id,
+            SAM_CSP_STATUS_INVALID_ARGUMENT,
+            SAM_CSP_SET_MODE_MODE_OFFSET,
+            response,
+            response_capacity,
+            response_length);
+    }
     return emit_domain_status(
         opcode,
         transaction_id,
-        dependencies->request_mode(request[4]),
+        dependencies->request_mode(request[SAM_CSP_SET_MODE_MODE_OFFSET]),
         SAM_CSP_DETAIL_APPLY_MODE,
         response,
         response_capacity,
@@ -289,6 +287,9 @@ static sam_csp_dispatch_action_t dispatch_snapshot(
             response,
             response_capacity,
             response_length);
+    }
+    if (response_capacity < SAM_CSP_SNAPSHOT_RESPONSE_LENGTH) {
+        return SAM_CSP_DISPATCH_DROP;
     }
 
     sam_csp_snapshot_t snapshot;
@@ -367,6 +368,9 @@ static sam_csp_dispatch_action_t dispatch_health(
             response_capacity,
             response_length);
     }
+    if (response_capacity < SAM_CSP_HEALTH_RESPONSE_LENGTH) {
+        return SAM_CSP_DISPATCH_DROP;
+    }
 
     csp_rs485_health_t link_health;
     sam_csp_health_t health;
@@ -415,9 +419,8 @@ sam_csp_dispatch_action_t sam_csp_service_dispatch(
         return SAM_CSP_DISPATCH_DROP;
     }
 
-    const size_t required_capacity = maximum_response_length(destination_port);
     if ((response == NULL) || (response_length == NULL)
-        || (response_capacity < required_capacity)) {
+        || (response_capacity < SAM_CSP_RESPONSE_HEADER_LENGTH)) {
         return SAM_CSP_DISPATCH_DROP;
     }
 

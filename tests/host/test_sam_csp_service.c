@@ -115,14 +115,15 @@ static void reset_dispatch_fakes(void)
     fake_domain_bind();
 }
 
-static void assert_status_response(
+static void assert_status_response_with_capacity(
     uint8_t port,
     const uint8_t *request,
     size_t request_length,
     uint8_t expected_status,
-    uint8_t expected_detail)
+    uint8_t expected_detail,
+    size_t response_capacity)
 {
-    uint8_t response[SAM_CSP_RESPONSE_HEADER_LENGTH + 2U];
+    uint8_t response[SAM_CSP_SNAPSHOT_RESPONSE_LENGTH];
     size_t response_length = 0xBEEFU;
 
     memset(response, 0xA5, sizeof(response));
@@ -134,7 +135,7 @@ static void assert_status_response(
             request,
             request_length,
             response,
-            SAM_CSP_RESPONSE_HEADER_LENGTH,
+            response_capacity,
             &response_length));
     TEST_ASSERT_EQ_SIZE(SAM_CSP_RESPONSE_HEADER_LENGTH, response_length);
     TEST_ASSERT_EQ_SIZE(SAM_CSP_PROTOCOL_VERSION, response[0]);
@@ -145,6 +146,22 @@ static void assert_status_response(
     TEST_ASSERT_EQ_SIZE(expected_detail, response[5]);
     TEST_ASSERT_EQ_SIZE(0xA5U, response[6]);
     TEST_ASSERT_EQ_SIZE(0xA5U, response[7]);
+}
+
+static void assert_status_response(
+    uint8_t port,
+    const uint8_t *request,
+    size_t request_length,
+    uint8_t expected_status,
+    uint8_t expected_detail)
+{
+    assert_status_response_with_capacity(
+        port,
+        request,
+        request_length,
+        expected_status,
+        expected_detail,
+        SAM_CSP_RESPONSE_HEADER_LENGTH);
 }
 
 static void command_set_outputs_maps_domain_results_and_details(void)
@@ -381,12 +398,13 @@ static void telemetry_snapshot_maps_success_and_failure(void)
 
     reset_dispatch_fakes();
     fake_domain_set_snapshot_result(SAM_CSP_DOMAIN_SNAPSHOT_FAILED);
-    assert_status_response(
+    assert_status_response_with_capacity(
         SAM_CSP_TELEMETRY_PORT,
         valid_get_snapshot,
         sizeof(valid_get_snapshot),
         SAM_CSP_STATUS_INTERNAL_ERROR,
-        2U);
+        2U,
+        SAM_CSP_SNAPSHOT_RESPONSE_LENGTH);
 }
 
 static void telemetry_port_reports_exact_bad_header_details(void)
