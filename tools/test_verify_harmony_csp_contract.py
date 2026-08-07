@@ -163,6 +163,39 @@ void SYS_Initialize(void *data)
 
                 self.assertTrue(check.failures, api)
 
+    def test_conditional_system_initialization_is_rejected(self) -> None:
+        main_source = """
+int main(void)
+{
+    if (ready)
+    {
+        SYS_Initialize(NULL);
+    }
+    else
+    {
+        xTaskCreate(NULL);
+    }
+}
+"""
+        check = self.verify_initialization(VALID_INIT, main_source)
+
+        self.assertTrue(check.failures)
+
+    def test_conditional_pio_initialization_is_rejected(self) -> None:
+        init_source = """
+void SYS_Initialize(void *data)
+{
+    if (ready)
+    {
+        PIO_Initialize();
+    }
+    xTaskCreate(NULL);
+}
+"""
+        check = self.verify_initialization(init_source, VALID_MAIN)
+
+        self.assertTrue(check.failures)
+
 
 class UsartHookTests(FixtureCase):
     def test_valid_false_guarded_fallbacks_are_accepted(self) -> None:
@@ -301,6 +334,176 @@ void USART1_InterruptHandler(void)
 
         self.assertTrue(any("RX-ready" in failure for failure in check.failures))
 
+    def test_error_side_effect_outside_hook_guard_is_rejected(self) -> None:
+        isr_source = """
+void USART1_InterruptHandler(void)
+{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {
+        usart1Obj.errorStatus = (USART_ERROR)errorStatus;
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {
+            USART1_ErrorClear();
+        }
+    }
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {
+        if (!USART1_UartCommRxReadyHook())
+        {
+            USART1_ISR_RX_Handler();
+        }
+    }
+}
+"""
+        check = self.verify_usart_source(isr_source)
+
+        self.assertTrue(any("error-status" in failure for failure in check.failures))
+
+    def test_rx_side_effect_outside_hook_guard_is_rejected(self) -> None:
+        isr_source = """
+void USART1_InterruptHandler(void)
+{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {
+            USART1_ErrorClear();
+        }
+    }
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {
+        usart1Obj.rxBusyStatus = false;
+        if (!USART1_UartCommRxReadyHook())
+        {
+            USART1_ISR_RX_Handler();
+        }
+    }
+}
+"""
+        check = self.verify_usart_source(isr_source)
+
+        self.assertTrue(any("RX-ready" in failure for failure in check.failures))
+
+    def test_inactive_zero_spellings_do_not_satisfy_rx_guard(self) -> None:
+        for zero in ("00", "0x0"):
+            with self.subTest(zero=zero):
+                isr_source = f"""
+void USART1_InterruptHandler(void)
+{{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {{
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {{
+            USART1_ErrorClear();
+        }}
+    }}
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {{
+#if {zero}
+        if (!USART1_UartCommRxReadyHook())
+        {{
+            USART1_ISR_RX_Handler();
+        }}
+#endif
+    }}
+}}
+"""
+                check = self.verify_usart_source(isr_source)
+
+                self.assertTrue(
+                    any("RX-ready" in failure for failure in check.failures), zero
+                )
+
+    def test_if_one_else_branch_does_not_satisfy_rx_guard(self) -> None:
+        isr_source = """
+void USART1_InterruptHandler(void)
+{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {
+            USART1_ErrorClear();
+        }
+    }
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {
+#if 1
+        /* Active branch intentionally has no fallback. */
+#else
+        if (!USART1_UartCommRxReadyHook())
+        {
+            USART1_ISR_RX_Handler();
+        }
+#endif
+    }
+}
+"""
+        check = self.verify_usart_source(isr_source)
+
+        self.assertTrue(any("RX-ready" in failure for failure in check.failures))
+
+    def test_nested_inactive_else_branch_does_not_satisfy_rx_guard(self) -> None:
+        isr_source = """
+void USART1_InterruptHandler(void)
+{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {
+            USART1_ErrorClear();
+        }
+    }
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {
+#if 1
+#if 1
+        /* Active nested branch intentionally has no fallback. */
+#else
+        if (!USART1_UartCommRxReadyHook())
+        {
+            USART1_ISR_RX_Handler();
+        }
+#endif
+#endif
+    }
+}
+"""
+        check = self.verify_usart_source(isr_source)
+
+        self.assertTrue(any("RX-ready" in failure for failure in check.failures))
+
+    def test_unknown_directive_around_rx_contract_fails_closed(self) -> None:
+        isr_source = """
+void USART1_InterruptHandler(void)
+{
+    uint32_t errorStatus = USART1_REGS->US_CSR & US_CSR_USART_OVRE_Msk;
+    if (errorStatus != 0U)
+    {
+        if (!USART1_UartCommErrorHook(errorStatus))
+        {
+            USART1_ErrorClear();
+        }
+    }
+    if ((USART1_REGS->US_CSR & US_CSR_USART_RXRDY_Msk) != 0U)
+    {
+#if FEATURE_RX_HOOK
+        if (!USART1_UartCommRxReadyHook())
+        {
+            USART1_ISR_RX_Handler();
+        }
+#endif
+    }
+}
+"""
+        check = self.verify_usart_source(isr_source)
+
+        self.assertTrue(any("RX-ready" in failure for failure in check.failures))
+
 
 class GetMacroTests(unittest.TestCase):
     def verify_get(self, replacement: str) -> verifier.Verification:
@@ -331,6 +534,50 @@ class GetMacroTests(unittest.TestCase):
                 check = self.verify_get(replacement)
 
                 self.assertTrue(check.failures)
+
+    def test_commuted_mask_expression_is_accepted(self) -> None:
+        check = self.verify_get("(1U & (PIOA_REGS->PIO_PDSR >> 22U))")
+
+        self.assertEqual([], check.failures)
+
+
+class PioTests(FixtureCase):
+    EXPECTED_ASSIGNMENTS = """
+PIOA_REGS->PIO_PDR = 0U;
+PIOA_REGS->PIO_PER = 0x01400000U;
+PIOA_REGS->PIO_OER = 0x01400000U;
+PIOA_REGS->PIO_ODR = 0U;
+PIOA_REGS->PIO_ODSR = 0U;
+    """
+
+    def test_assignments_in_string_are_rejected(self) -> None:
+        escaped_assignments = self.EXPECTED_ASSIGNMENTS.strip().replace("\n", r"\n")
+        source = f'''\
+void PIO_Initialize(void)
+{{
+    const char *ignored = "{escaped_assignments}";
+}}
+'''
+        check = self.verify_file(
+            "PIO_C_PATH", source, verifier.verify_pio_initialization
+        )
+
+        self.assertTrue(check.failures)
+
+    def test_assignments_in_if_zero_branch_are_rejected(self) -> None:
+        source = f"""
+void PIO_Initialize(void)
+{{
+#if 0
+{self.EXPECTED_ASSIGNMENTS}
+#endif
+}}
+"""
+        check = self.verify_file(
+            "PIO_C_PATH", source, verifier.verify_pio_initialization
+        )
+
+        self.assertTrue(check.failures)
 
 
 class CsvTests(FixtureCase):
@@ -392,6 +639,30 @@ void NVIC_Initialize(void)
 void NVIC_Initialize(void)
 {
     NVIC_SetPriority(USART1_IRQn, (6U));
+}
+"""
+        check = self.verify_file("NVIC_PATH", source, verifier.verify_nvic)
+
+        self.assertTrue(check.failures)
+
+    def test_priority_call_in_string_is_rejected(self) -> None:
+        source = '''
+void NVIC_Initialize(void)
+{
+    const char *ignored = "NVIC_SetPriority(USART1_IRQn, 7)";
+}
+'''
+        check = self.verify_file("NVIC_PATH", source, verifier.verify_nvic)
+
+        self.assertTrue(check.failures)
+
+    def test_priority_call_in_if_zero_branch_is_rejected(self) -> None:
+        source = """
+void NVIC_Initialize(void)
+{
+#if 0
+    NVIC_SetPriority(USART1_IRQn, 7);
+#endif
 }
 """
         check = self.verify_file("NVIC_PATH", source, verifier.verify_nvic)
