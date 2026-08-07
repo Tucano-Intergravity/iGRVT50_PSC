@@ -164,6 +164,10 @@ void fake_samv71_hw_set_status_script(
     size_t count,
     uint32_t default_status)
 {
+    if (count > FAKE_SAMV71_CAPACITY) {
+        count = FAKE_SAMV71_CAPACITY;
+        fake_hw.event_overflow = true;
+    }
     fake_hw.status_count = count;
     fake_hw.status_position = 0U;
     fake_hw.status_default = default_status;
@@ -174,6 +178,10 @@ void fake_samv71_hw_set_status_script(
 
 void fake_samv71_hw_set_time_script(const uint32_t *values, size_t count)
 {
+    if (count > FAKE_SAMV71_CAPACITY) {
+        count = FAKE_SAMV71_CAPACITY;
+        fake_hw.event_overflow = true;
+    }
     fake_hw.time_count = count;
     fake_hw.time_position = 0U;
     if ((values != NULL) && (count > 0U)) {
@@ -183,6 +191,10 @@ void fake_samv71_hw_set_time_script(const uint32_t *values, size_t count)
 
 void fake_samv71_hw_set_rx_bytes(const uint8_t *bytes, size_t count)
 {
+    if (count > FAKE_SAMV71_CAPACITY) {
+        count = FAKE_SAMV71_CAPACITY;
+        fake_hw.event_overflow = true;
+    }
     fake_hw.rx_count = count;
     fake_hw.rx_position = 0U;
     if ((bytes != NULL) && (count > 0U)) {
