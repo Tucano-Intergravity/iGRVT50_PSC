@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 import sys
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 
@@ -15,6 +16,60 @@ APPLICATION_CSP_SOURCES = (
     "iGRVT50/source/csp/sam_csp_runtime.c",
     "iGRVT50/source/csp/sam_csp_service.c",
     "iGRVT50/source/csp/samv71_rs485_port.c",
+)
+
+LIBCSP_SOURCES = (
+    "third_party/libcsp/src/arch/freertos/csp_clock.c",
+    "third_party/libcsp/src/arch/freertos/csp_malloc.c",
+    "third_party/libcsp/src/arch/freertos/csp_queue.c",
+    "third_party/libcsp/src/arch/freertos/csp_semaphore.c",
+    "third_party/libcsp/src/arch/freertos/csp_system.c",
+    "third_party/libcsp/src/arch/freertos/csp_thread.c",
+    "third_party/libcsp/src/arch/freertos/csp_time.c",
+    "third_party/libcsp/src/arch/csp_system.c",
+    "third_party/libcsp/src/arch/csp_time.c",
+    "third_party/libcsp/src/crypto/csp_hmac.c",
+    "third_party/libcsp/src/crypto/csp_sha1.c",
+    "third_party/libcsp/src/crypto/csp_xtea.c",
+    "third_party/libcsp/src/interfaces/csp_if_can_pbuf.c",
+    "third_party/libcsp/src/interfaces/csp_if_can.c",
+    "third_party/libcsp/src/interfaces/csp_if_i2c.c",
+    "third_party/libcsp/src/interfaces/csp_if_kiss.c",
+    "third_party/libcsp/src/interfaces/csp_if_lo.c",
+    "third_party/libcsp/src/interfaces/csp_if_zmqhub.c",
+    "third_party/libcsp/src/rtable/csp_rtable.c",
+    "third_party/libcsp/src/rtable/csp_rtable_static.c",
+    "third_party/libcsp/src/transport/csp_rdp.c",
+    "third_party/libcsp/src/transport/csp_udp.c",
+    "third_party/libcsp/src/csp_bridge.c",
+    "third_party/libcsp/src/csp_buffer.c",
+    "third_party/libcsp/src/csp_conn.c",
+    "third_party/libcsp/src/csp_crc32.c",
+    "third_party/libcsp/src/csp_debug.c",
+    "third_party/libcsp/src/csp_dedup.c",
+    "third_party/libcsp/src/csp_endian.c",
+    "third_party/libcsp/src/csp_hex_dump.c",
+    "third_party/libcsp/src/csp_iflist.c",
+    "third_party/libcsp/src/csp_init.c",
+    "third_party/libcsp/src/csp_io.c",
+    "third_party/libcsp/src/csp_port.c",
+    "third_party/libcsp/src/csp_promisc.c",
+    "third_party/libcsp/src/csp_qfifo.c",
+    "third_party/libcsp/src/csp_route.c",
+    "third_party/libcsp/src/csp_service_handler.c",
+    "third_party/libcsp/src/csp_services.c",
+    "third_party/libcsp/src/csp_sfp.c",
+)
+
+CSP_RS485_SOURCES = (
+    "third_party/csp-rs485/src/csp_rs485_freertos.c",
+    "third_party/csp-rs485/src/csp_rs485_kiss.c",
+    "third_party/csp-rs485/src/csp_rs485_link.c",
+    "third_party/csp-rs485/src/csp_rs485_supervisor.c",
+)
+
+CANONICAL_APPLICATION_CSP_SOURCES = tuple(
+    f"sam_ctl.X/{source}" for source in APPLICATION_CSP_SOURCES
 )
 
 PUBLIC_CSP_HEADERS = (
@@ -177,6 +232,109 @@ def _normalized(text: str) -> str:
     return text.replace("\\", "/")
 
 
+def _canonical_graph_source(source: str, graph: str) -> str:
+    normalized = _normalized(source.strip())
+    cmake_prefix = "${CMAKE_CURRENT_SOURCE_DIR}/../../../"
+    if graph == "CMake mirror":
+        if not normalized.startswith(cmake_prefix):
+            return normalized
+        return normalized.removeprefix(cmake_prefix)
+    if normalized.startswith("../"):
+        return normalized.removeprefix("../")
+    return f"sam_ctl.X/{normalized}"
+
+
+def _make_source_values(text: str, errors: list[str]) -> list[str]:
+    lines = text.splitlines()
+    assignments: list[str] = []
+    index = 0
+    while index < len(lines):
+        match = re.match(r"^SOURCEFILES\s*=\s*(.*)$", lines[index])
+        if match:
+            value = match.group(1)
+            while value.rstrip().endswith("\\") and index + 1 < len(lines):
+                value = value.rstrip()[:-1] + " " + lines[index + 1].strip()
+                index += 1
+            assignments.append(value)
+        index += 1
+    if len(assignments) != 1:
+        errors.append(
+            "MPLAB Makefile must contain exactly one SOURCEFILES assignment"
+        )
+        return []
+    return [token for token in assignments[0].split() if token.endswith(".c")]
+
+
+def _verify_source_graph_parity(
+    root: Path,
+    xml_tree: ET.Element | None,
+    make_text: str,
+    cmake_text: str,
+    errors: list[str],
+) -> None:
+    raw_graphs = {
+        "MPLAB XML": (
+            []
+            if xml_tree is None
+            else [
+                (item.text or "").strip()
+                for item in xml_tree.iter("itemPath")
+                if (item.text or "").strip().lower().endswith(".c")
+            ]
+        ),
+        "MPLAB Makefile": _make_source_values(make_text, errors),
+        "CMake mirror": re.findall(r'"([^"\r\n]+\.c)"', cmake_text),
+    }
+    graphs: dict[str, list[str]] = {}
+    for graph_name, raw_sources in raw_graphs.items():
+        sources = [
+            _canonical_graph_source(source, graph_name) for source in raw_sources
+        ]
+        graphs[graph_name] = sources
+        duplicates = sorted(
+            source for source, count in Counter(sources).items() if count > 1
+        )
+        for source in duplicates:
+            errors.append(f"duplicate C source in {graph_name}: {source}")
+
+    source_sets = {name: set(sources) for name, sources in graphs.items()}
+    baseline_name = "MPLAB XML"
+    baseline = source_sets[baseline_name]
+    for graph_name in ("MPLAB Makefile", "CMake mirror"):
+        current = source_sets[graph_name]
+        if current != baseline:
+            missing = ", ".join(sorted(baseline - current)) or "none"
+            extra = ", ".join(sorted(current - baseline)) or "none"
+            errors.append(
+                f"source-set parity mismatch: {graph_name} versus {baseline_name}; "
+                f"missing={missing}; extra={extra}"
+            )
+
+    expected_inventories = (
+        ("libcsp", set(LIBCSP_SOURCES), "third_party/libcsp/"),
+        ("csp-rs485", set(CSP_RS485_SOURCES), "third_party/csp-rs485/"),
+        (
+            "application CSP",
+            set(CANONICAL_APPLICATION_CSP_SOURCES),
+            "sam_ctl.X/iGRVT50/source/csp/",
+        ),
+    )
+    for graph_name, source_set in source_sets.items():
+        for inventory_name, expected, prefix in expected_inventories:
+            actual = {source for source in source_set if source.startswith(prefix)}
+            if actual != expected:
+                missing = ", ".join(sorted(expected - actual)) or "none"
+                extra = ", ".join(sorted(actual - expected)) or "none"
+                errors.append(
+                    f"{inventory_name} source inventory mismatch in {graph_name}; "
+                    f"missing={missing}; extra={extra}"
+                )
+
+    for source in sorted(set().union(*source_sets.values())):
+        if not (root / source).is_file():
+            errors.append(f"production C source missing from disk: {source}")
+
+
 def _verify_no_legacy(root: Path, errors: list[str]) -> None:
     for relative in LEGACY_FILES:
         if (root / relative).exists():
@@ -210,15 +368,18 @@ def _verify_graphs(root: Path, errors: list[str]) -> None:
     )
 
     xml_items: set[str] = set()
+    xml_tree: ET.Element | None = None
     if xml_text:
         try:
-            tree = ET.fromstring(xml_text)
+            xml_tree = ET.fromstring(xml_text)
             xml_items = {
                 _normalized((item.text or "").strip()).removeprefix("../")
-                for item in tree.iter("itemPath")
+                for item in xml_tree.iter("itemPath")
             }
         except ET.ParseError as exc:
             errors.append(f"invalid configurations.xml: {exc}")
+
+    _verify_source_graph_parity(root, xml_tree, make_text, cmake_text, errors)
 
     for source in APPLICATION_CSP_SOURCES:
         disk_path = root / "sam_ctl.X" / source

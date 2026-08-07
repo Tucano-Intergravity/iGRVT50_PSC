@@ -11,6 +11,74 @@ from tools.verify_csp_cutover import (
 )
 
 
+LIBCSP_SOURCES = (
+    "third_party/libcsp/src/arch/freertos/csp_clock.c",
+    "third_party/libcsp/src/arch/freertos/csp_malloc.c",
+    "third_party/libcsp/src/arch/freertos/csp_queue.c",
+    "third_party/libcsp/src/arch/freertos/csp_semaphore.c",
+    "third_party/libcsp/src/arch/freertos/csp_system.c",
+    "third_party/libcsp/src/arch/freertos/csp_thread.c",
+    "third_party/libcsp/src/arch/freertos/csp_time.c",
+    "third_party/libcsp/src/arch/csp_system.c",
+    "third_party/libcsp/src/arch/csp_time.c",
+    "third_party/libcsp/src/crypto/csp_hmac.c",
+    "third_party/libcsp/src/crypto/csp_sha1.c",
+    "third_party/libcsp/src/crypto/csp_xtea.c",
+    "third_party/libcsp/src/interfaces/csp_if_can_pbuf.c",
+    "third_party/libcsp/src/interfaces/csp_if_can.c",
+    "third_party/libcsp/src/interfaces/csp_if_i2c.c",
+    "third_party/libcsp/src/interfaces/csp_if_kiss.c",
+    "third_party/libcsp/src/interfaces/csp_if_lo.c",
+    "third_party/libcsp/src/interfaces/csp_if_zmqhub.c",
+    "third_party/libcsp/src/rtable/csp_rtable.c",
+    "third_party/libcsp/src/rtable/csp_rtable_static.c",
+    "third_party/libcsp/src/transport/csp_rdp.c",
+    "third_party/libcsp/src/transport/csp_udp.c",
+    "third_party/libcsp/src/csp_bridge.c",
+    "third_party/libcsp/src/csp_buffer.c",
+    "third_party/libcsp/src/csp_conn.c",
+    "third_party/libcsp/src/csp_crc32.c",
+    "third_party/libcsp/src/csp_debug.c",
+    "third_party/libcsp/src/csp_dedup.c",
+    "third_party/libcsp/src/csp_endian.c",
+    "third_party/libcsp/src/csp_hex_dump.c",
+    "third_party/libcsp/src/csp_iflist.c",
+    "third_party/libcsp/src/csp_init.c",
+    "third_party/libcsp/src/csp_io.c",
+    "third_party/libcsp/src/csp_port.c",
+    "third_party/libcsp/src/csp_promisc.c",
+    "third_party/libcsp/src/csp_qfifo.c",
+    "third_party/libcsp/src/csp_route.c",
+    "third_party/libcsp/src/csp_service_handler.c",
+    "third_party/libcsp/src/csp_services.c",
+    "third_party/libcsp/src/csp_sfp.c",
+)
+
+CSP_RS485_SOURCES = (
+    "third_party/csp-rs485/src/csp_rs485_freertos.c",
+    "third_party/csp-rs485/src/csp_rs485_kiss.c",
+    "third_party/csp-rs485/src/csp_rs485_link.c",
+    "third_party/csp-rs485/src/csp_rs485_supervisor.c",
+)
+
+CANONICAL_APPLICATION_CSP_SOURCES = tuple(
+    f"sam_ctl.X/{source}" for source in APPLICATION_CSP_SOURCES
+)
+PRODUCTION_SOURCES = (
+    *LIBCSP_SOURCES,
+    *CSP_RS485_SOURCES,
+    *CANONICAL_APPLICATION_CSP_SOURCES,
+)
+
+
+def graph_path(source: str, graph: str) -> str:
+    if graph == "cmake":
+        return source
+    if source.startswith("sam_ctl.X/"):
+        return source.removeprefix("sam_ctl.X/")
+    return f"../{source}"
+
+
 OPU_SOURCE = r'''
 #include <csp/sam_csp_runtime.h>
 static void TcTask(void *p) { (void)p; }
@@ -88,6 +156,8 @@ class CutoverFixture:
         for source in APPLICATION_CSP_SOURCES:
             body = PORT_SOURCE if source.endswith("samv71_rs485_port.c") else "void placeholder(void) {}\n"
             self.write(f"sam_ctl.X/{source}", body)
+        for source in (*LIBCSP_SOURCES, *CSP_RS485_SOURCES):
+            self.write(source, "void vendor_placeholder(void) {}\n")
         for header in PUBLIC_CSP_HEADERS:
             self.write(f"sam_ctl.X/{header}", "#pragma once\n")
         self._write_graphs()
@@ -107,13 +177,16 @@ class CutoverFixture:
         self.write(relative, text.replace(old, new, 1))
 
     def _write_graphs(self) -> None:
+        graph_sources = tuple(graph_path(source, "xml") for source in PRODUCTION_SOURCES)
         items = "\n".join(
             f"<item><itemPath>{path}</itemPath></item>"
-            for path in (*APPLICATION_CSP_SOURCES, *PUBLIC_CSP_HEADERS)
+            for path in (*graph_sources, *PUBLIC_CSP_HEADERS)
         )
         self.write("sam_ctl.X/nbproject/configurations.xml", f"<configuration>{items}</configuration>\n")
 
-        source_list = " ".join(APPLICATION_CSP_SOURCES)
+        source_list = " ".join(
+            graph_path(source, "make") for source in PRODUCTION_SOURCES
+        )
         rules = []
         for image in ("debug", "production"):
             for source in APPLICATION_CSP_SOURCES:
@@ -127,8 +200,8 @@ class CutoverFixture:
             f"SOURCEFILES={source_list}\n" + "\n".join(rules) + "\n",
         )
         cmake_sources = "\n".join(
-            f'    "${{CMAKE_CURRENT_SOURCE_DIR}}/../../../sam_ctl.X/{source}"'
-            for source in APPLICATION_CSP_SOURCES
+            f'    "${{CMAKE_CURRENT_SOURCE_DIR}}/../../../{graph_path(source, "cmake")}"'
+            for source in PRODUCTION_SOURCES
         )
         self.write(
             "cmake/sam_ctl/default/.generated/file.cmake",
@@ -165,7 +238,7 @@ class VerifyCspCutoverTests(unittest.TestCase):
         source = APPLICATION_CSP_SOURCES[0]
         mutations = (
             ("sam_ctl.X/nbproject/configurations.xml", f"<item><itemPath>{source}</itemPath></item>", ""),
-            ("sam_ctl.X/nbproject/Makefile-default.mk", f"SOURCEFILES={' '.join(APPLICATION_CSP_SOURCES)}", "SOURCEFILES="),
+            ("sam_ctl.X/nbproject/Makefile-default.mk", graph_path(f"sam_ctl.X/{source}", "make"), "removed.c"),
             ("cmake/sam_ctl/default/.generated/file.cmake", f"../../../sam_ctl.X/{source}", "../../../sam_ctl.X/removed.c"),
         )
         for path, old, new in mutations:
@@ -175,6 +248,89 @@ class VerifyCspCutoverTests(unittest.TestCase):
                     fixture.replace(path, old, new)
                     errors = verify_repository(fixture.root)
                     self.assertTrue(any("missing" in error or "lacks" in error for error in errors), errors)
+
+    def test_rejects_libcsp_source_removed_independently_from_each_graph(self) -> None:
+        self._assert_source_removal_rejected(LIBCSP_SOURCES[0])
+
+    def test_rejects_csp_rs485_source_removed_independently_from_each_graph(self) -> None:
+        self._assert_source_removal_rejected(CSP_RS485_SOURCES[0])
+
+    def _assert_source_removal_rejected(self, source: str) -> None:
+        mutations = (
+            (
+                "sam_ctl.X/nbproject/configurations.xml",
+                f"<item><itemPath>{graph_path(source, 'xml')}</itemPath></item>",
+            ),
+            (
+                "sam_ctl.X/nbproject/Makefile-default.mk",
+                graph_path(source, "make"),
+            ),
+            (
+                "cmake/sam_ctl/default/.generated/file.cmake",
+                f"../../../{graph_path(source, 'cmake')}",
+            ),
+        )
+        for path, spelling in mutations:
+            with self.subTest(path=path, source=source):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = CutoverFixture(Path(directory))
+                    fixture.replace(path, spelling, "removed.c")
+                    errors = verify_repository(fixture.root)
+                    self.assertTrue(
+                        any("source-set" in error or "inventory" in error for error in errors),
+                        errors,
+                    )
+
+    def test_rejects_consistent_extra_vendor_source(self) -> None:
+        extra = "third_party/libcsp/src/csp_extra.c"
+        self.fixture.write(extra, "void extra(void) {}\n")
+        self.fixture.replace(
+            "sam_ctl.X/nbproject/configurations.xml",
+            "</configuration>",
+            f"<item><itemPath>../{extra}</itemPath></item></configuration>",
+        )
+        self.fixture.replace(
+            "sam_ctl.X/nbproject/Makefile-default.mk",
+            "SOURCEFILES=",
+            f"SOURCEFILES=../{extra} ",
+        )
+        self.fixture.replace(
+            "cmake/sam_ctl/default/.generated/file.cmake",
+            "set(SOURCE_FILES\n",
+            f'set(SOURCE_FILES\n    "${{CMAKE_CURRENT_SOURCE_DIR}}/../../../{extra}"\n',
+        )
+        self.assert_error_contains("libcsp source inventory")
+
+    def test_rejects_duplicate_source_in_each_graph(self) -> None:
+        source = LIBCSP_SOURCES[0]
+        mutations = (
+            (
+                "sam_ctl.X/nbproject/configurations.xml",
+                "</configuration>",
+                f"<item><itemPath>../{source}</itemPath></item></configuration>",
+            ),
+            (
+                "sam_ctl.X/nbproject/Makefile-default.mk",
+                "SOURCEFILES=",
+                f"SOURCEFILES=../{source} ",
+            ),
+            (
+                "cmake/sam_ctl/default/.generated/file.cmake",
+                "set(SOURCE_FILES\n",
+                f'set(SOURCE_FILES\n    "${{CMAKE_CURRENT_SOURCE_DIR}}/../../../{source}"\n',
+            ),
+        )
+        for path, old, new in mutations:
+            with self.subTest(path=path):
+                with tempfile.TemporaryDirectory() as directory:
+                    fixture = CutoverFixture(Path(directory))
+                    fixture.replace(path, old, new)
+                    errors = verify_repository(fixture.root)
+                    self.assertTrue(any("duplicate C source" in error for error in errors), errors)
+
+    def test_rejects_production_source_missing_from_disk(self) -> None:
+        (self.fixture.root / LIBCSP_SOURCES[0]).unlink()
+        self.assert_error_contains("production C source missing from disk")
 
     def test_rejects_public_header_missing_from_mplab_graph(self) -> None:
         header = PUBLIC_CSP_HEADERS[-1]
