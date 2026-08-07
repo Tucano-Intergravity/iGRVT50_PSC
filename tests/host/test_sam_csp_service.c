@@ -122,7 +122,7 @@ static void assert_status_response(
     uint8_t expected_status,
     uint8_t expected_detail)
 {
-    uint8_t response[SAM_CSP_HEALTH_RESPONSE_LENGTH];
+    uint8_t response[SAM_CSP_SNAPSHOT_RESPONSE_LENGTH];
     size_t response_length = 0xBEEFU;
 
     memset(response, 0xA5, sizeof(response));
@@ -444,8 +444,8 @@ static void diagnostic_port_reports_exact_bad_header_details(void)
 static void rejected_inputs_leave_output_and_domain_untouched(void)
 {
     static const uint8_t short_header[] = {0x01U, 0x01U, 0x12U};
-    uint8_t response[SAM_CSP_HEALTH_RESPONSE_LENGTH];
-    uint8_t expected[SAM_CSP_HEALTH_RESPONSE_LENGTH];
+    uint8_t response[SAM_CSP_SNAPSHOT_RESPONSE_LENGTH];
+    uint8_t expected[SAM_CSP_SNAPSHOT_RESPONSE_LENGTH];
     size_t response_length;
     fake_domain_observations_t observed;
 

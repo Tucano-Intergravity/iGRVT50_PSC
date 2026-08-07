@@ -242,6 +242,11 @@ static TaskHandle_t runtime_fake_task_create(
     return &fake_service_task;
 }
 
+static void runtime_fake_task_delete(TaskHandle_t task)
+{
+    vTaskDelete(task);
+}
+
 static int runtime_fake_service_prepare(void)
 {
     record_runtime_event(EVENT_SERVICE_PREPARE);
@@ -276,6 +281,7 @@ static const sam_csp_runtime_ops_t fake_runtime_ops = {
     .link_get_interface = runtime_fake_get_interface,
     .route_set = runtime_fake_route_set,
     .task_create_static = runtime_fake_task_create,
+    .task_delete = runtime_fake_task_delete,
     .service_prepare = runtime_fake_service_prepare,
     .link_force_receive = runtime_fake_force_receive,
     .report_failure = runtime_fake_report_failure,
