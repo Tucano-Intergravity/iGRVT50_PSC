@@ -66,6 +66,7 @@ PROJECT_SOURCES := \
 	third_party/csp-rs485/src/csp_rs485_supervisor.c \
 	third_party/csp-rs485/src/csp_rs485_freertos.c \
 	tests/host/fakes/fake_port.c \
+	tests/host/fakes/fake_domain.c \
 	tests/host/fakes/domain/fake_sam_csp_domain.c \
 	tests/host/fakes/fake_opu_tc_scan.c \
 	tests/host/fakes/samv71/fake_samv71_hw.c \
@@ -82,6 +83,8 @@ PROJECT_SOURCES := \
 	tests/host/test_sensor_publication.c \
 	tests/host/test_opu_tc_scan.c \
 	tests/host/test_samv71_rs485_port.c \
+	tests/host/test_sam_csp_service.c \
+	tests/host/test_sam_csp_runtime.c \
 	tests/host/support/test_sensor_under_test.c \
 	tests/host/support/host_csp.c
 
@@ -100,6 +103,18 @@ endif
 SAMV71_RS485_PORT_SOURCE := sam_ctl.X/iGRVT50/source/csp/samv71_rs485_port.c
 ifneq ($(wildcard $(REPO_ROOT)/$(SAMV71_RS485_PORT_SOURCE)),)
 PROJECT_SOURCES += $(SAMV71_RS485_PORT_SOURCE)
+endif
+
+SAM_CSP_SERVICE_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_service.c
+ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_SERVICE_SOURCE)),)
+COMMON_CPPFLAGS += -DSAM_CSP_SERVICE_HAVE_IMPLEMENTATION=1
+PROJECT_SOURCES += $(SAM_CSP_SERVICE_SOURCE)
+endif
+
+SAM_CSP_RUNTIME_SOURCE := sam_ctl.X/iGRVT50/source/csp/sam_csp_runtime.c
+ifneq ($(wildcard $(REPO_ROOT)/$(SAM_CSP_RUNTIME_SOURCE)),)
+COMMON_CPPFLAGS += -DSAM_CSP_RUNTIME_HAVE_IMPLEMENTATION=1
+PROJECT_SOURCES += $(SAM_CSP_RUNTIME_SOURCE)
 endif
 
 LIBCSP_SOURCES := \
