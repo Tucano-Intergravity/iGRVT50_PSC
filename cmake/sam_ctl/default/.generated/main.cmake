@@ -1,4 +1,3 @@
-# cmake files support debug production
 include("${CMAKE_CURRENT_LIST_DIR}/rule.cmake")
 include("${CMAKE_CURRENT_LIST_DIR}/file.cmake")
 
@@ -44,44 +43,26 @@ add_library(sam_ctl_default_default_XC32_dependentObject OBJECT ${sam_ctl_defaul
 
 endif()
 
-# Handle files with suffix elf, for group default-XC32
-if(sam_ctl_default_default_XC32_FILE_TYPE_bin2hex)
-add_library(sam_ctl_default_default_XC32_bin2hex OBJECT ${sam_ctl_default_default_XC32_FILE_TYPE_bin2hex})
-    sam_ctl_default_default_XC32_bin2hex_rule(sam_ctl_default_default_XC32_bin2hex)
-    list(APPEND sam_ctl_default_library_list "$<TARGET_OBJECTS:sam_ctl_default_default_XC32_bin2hex>")
-
-endif()
-
 
 # Main target for this project
-add_executable(sam_ctl_default_image_z0K41CAI ${sam_ctl_default_library_list})
+add_executable(sam_ctl_default_image_OOJykqNe ${sam_ctl_default_library_list})
 
-if(NOT CMAKE_HOST_WIN32)
-    set_target_properties(sam_ctl_default_image_z0K41CAI PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${sam_ctl_default_output_dir})
-endif()
-set_target_properties(sam_ctl_default_image_z0K41CAI PROPERTIES OUTPUT_NAME "default")
-set_target_properties(sam_ctl_default_image_z0K41CAI PROPERTIES SUFFIX ".elf")
-
-target_link_libraries(sam_ctl_default_image_z0K41CAI PRIVATE ${sam_ctl_default_default_XC32_FILE_TYPE_link})
-
+set_target_properties(sam_ctl_default_image_OOJykqNe PROPERTIES
+    OUTPUT_NAME "default"
+    SUFFIX ".elf"
+    RUNTIME_OUTPUT_DIRECTORY "${sam_ctl_default_output_dir}")
+target_link_libraries(sam_ctl_default_image_OOJykqNe PRIVATE ${sam_ctl_default_default_XC32_FILE_TYPE_link})
 
 # Add the link options from the rule file.
-sam_ctl_default_link_rule(sam_ctl_default_image_z0K41CAI)
+sam_ctl_default_link_rule( sam_ctl_default_image_OOJykqNe)
 
-# Call bin2hex function from the rule file
-sam_ctl_default_bin2hex_rule(sam_ctl_default_image_z0K41CAI)
+# Add bin2hex target for converting built file to a .hex file.
+string(REGEX REPLACE [.]elf$ .hex sam_ctl_default_image_name_hex ${sam_ctl_default_image_name})
+add_custom_target(sam_ctl_default_Bin2Hex ALL
+    COMMAND ${MP_BIN2HEX} \"${sam_ctl_default_output_dir}/${sam_ctl_default_image_name}\"
+    BYPRODUCTS ${sam_ctl_default_output_dir}/${sam_ctl_default_image_name_hex}
+    COMMENT "Convert built file to .hex")
+add_dependencies(sam_ctl_default_Bin2Hex sam_ctl_default_image_OOJykqNe)
 
-if(CMAKE_HOST_WIN32)
-    add_custom_command(
-        TARGET sam_ctl_default_image_z0K41CAI
-        POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E make_directory ${sam_ctl_default_output_dir}
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:sam_ctl_default_image_z0K41CAI> ${sam_ctl_default_output_dir}/${sam_ctl_default_original_image_name}
-        BYPRODUCTS ${sam_ctl_default_output_dir}/${sam_ctl_default_original_image_name}
-        COMMENT "Copying elf to out location")
-    set_property(
-        TARGET sam_ctl_default_image_z0K41CAI
-        APPEND PROPERTY ADDITIONAL_CLEAN_FILES
-        ${sam_ctl_default_output_dir}/${sam_ctl_default_original_image_name})
-endif()
+
 
