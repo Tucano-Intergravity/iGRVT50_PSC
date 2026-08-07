@@ -16,11 +16,15 @@ foreach(source_file ${sam_ctl_default_default_XC32_FILE_TYPE_assembleWithPreproc
 endforeach()
 
 set(sam_ctl_default_default_XC32_FILE_TYPE_compile
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/csp/sam_csp_codec.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/csp/sam_csp_domain.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/csp/sam_csp_runtime.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/csp/sam_csp_service.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/csp/samv71_rs485_port.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/hpsolvalve.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/lpsolvalve.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/sensor.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/statemachine.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/uartcomm.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/adc_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/exceptions.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/freertos_hooks.c"
@@ -49,7 +53,6 @@ set(sam_ctl_default_default_XC32_FILE_TYPE_compile
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/main.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/opu_task.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/pwm_func.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/rs422_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/tc_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/third_party/rtos/FreeRTOS/Source/FreeRTOS_tasks.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/third_party/rtos/FreeRTOS/Source/croutine.c"

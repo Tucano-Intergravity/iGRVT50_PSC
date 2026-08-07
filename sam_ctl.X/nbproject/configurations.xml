@@ -103,12 +103,16 @@
         <logicalFolder name="header" displayName="header" projectFiles="true">
           <logicalFolder name="csp" displayName="csp" projectFiles="true">
             <itemPath>iGRVT50/header/csp/sam_csp_config.h</itemPath>
+            <itemPath>iGRVT50/header/csp/sam_csp_domain.h</itemPath>
+            <itemPath>iGRVT50/header/csp/sam_csp_protocol.h</itemPath>
+            <itemPath>iGRVT50/header/csp/sam_csp_runtime.h</itemPath>
+            <itemPath>iGRVT50/header/csp/sam_csp_service.h</itemPath>
+            <itemPath>iGRVT50/header/csp/samv71_rs485_port.h</itemPath>
           </logicalFolder>
           <itemPath>iGRVT50/header/hpsolvalve.h</itemPath>
           <itemPath>iGRVT50/header/lpsolvalve.h</itemPath>
           <itemPath>iGRVT50/header/sensor.h</itemPath>
           <itemPath>iGRVT50/header/statemachine.h</itemPath>
-          <itemPath>iGRVT50/header/uartcomm.h</itemPath>
         </logicalFolder>
       </logicalFolder>
       <logicalFolder name="libcsp_config_header"
@@ -378,11 +382,17 @@
       </logicalFolder>
       <logicalFolder name="iGRVT50_source" displayName="iGRVT50" projectFiles="true">
         <logicalFolder name="source" displayName="source" projectFiles="true">
+          <logicalFolder name="csp" displayName="csp" projectFiles="true">
+            <itemPath>iGRVT50/source/csp/sam_csp_codec.c</itemPath>
+            <itemPath>iGRVT50/source/csp/sam_csp_domain.c</itemPath>
+            <itemPath>iGRVT50/source/csp/sam_csp_runtime.c</itemPath>
+            <itemPath>iGRVT50/source/csp/sam_csp_service.c</itemPath>
+            <itemPath>iGRVT50/source/csp/samv71_rs485_port.c</itemPath>
+          </logicalFolder>
           <itemPath>iGRVT50/source/hpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/lpsolvalve.c</itemPath>
           <itemPath>iGRVT50/source/sensor.c</itemPath>
           <itemPath>iGRVT50/source/statemachine.c</itemPath>
-          <itemPath>iGRVT50/source/uartcomm.c</itemPath>
         </logicalFolder>
       </logicalFolder>
       <logicalFolder name="libcsp" displayName="libcsp" projectFiles="true">
@@ -445,7 +455,6 @@
       <itemPath>../src/adc_func.c</itemPath>
       <itemPath>../src/dbg_task.c</itemPath>
       <itemPath>../src/opu_task.c</itemPath>
-      <itemPath>../src/rs422_func.c</itemPath>
       <itemPath>../src/tc_func.c</itemPath>
       <itemPath>../src/pwm_func.c</itemPath>
     </logicalFolder>

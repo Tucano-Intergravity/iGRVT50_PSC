@@ -1,7 +1,12 @@
 #ifndef CSP_AUTOCONFIG_H
 #define CSP_AUTOCONFIG_H
 
+#include <stddef.h>
+
 /* SAMV71 target profile for the pinned libcsp v1.6 revision. */
+
+/* XC32 exposes this POSIX-compatible builtin without shipping its symbol. */
+int strncasecmp(const char *left, const char *right, size_t count);
 
 #define GIT_REV "v1.6-0-g87006959"
 #define LIBCSP_VERSION "1.6"

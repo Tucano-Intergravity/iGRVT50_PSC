@@ -13,10 +13,6 @@
  *============================================================================*/
 /* --- includes --- */
 #include <stddef.h>                     // Defines NULL
-#include <stdbool.h>                    // Defines true
-#include <stdlib.h>                     // Defines EXIT_FAILURE
-#include <stdio.h>
-#include <string.h>
 #include "definitions.h"                // SYS function prototypes
 
 /* --- FreeRTOS includes --- */
@@ -32,15 +28,14 @@
 #include "opu_tc_scan.h"
 #include "lpsolvalve.h"
 #include "hpsolvalve.h"
-#include "uartcomm.h"
 #include "statemachine.h"
+#include <csp/sam_csp_runtime.h>
 
 /*==============================================================================
  * Gloabal Variables
  *============================================================================*/
 /* --- handler  --- */
 static TaskHandle_t xTcTask;		// TC task handler
-static TaskHandle_t xRsTask;		// RS task handler
 static TaskHandle_t xAdcTask;		// ADC task handler
 static TaskHandle_t xOpuTaskSelf;   // OPU task handler for timer notification
 
@@ -71,24 +66,6 @@ float OpuGetPresGain( void )    { return s_presGain; }
 
 #define LPV01_GPIO_PA0_MASK         (1UL << 0)    /* LP_Valve01 = PA0 / PWM0_PWMH0 */
 #define LPV01_RTN_PD12_MASK         (1UL << 12)   /* LP_Valve_CTRL_ALL = PD12 / TPD2017_KILL_ALL */
-#define TCMD_PACKET_HEADER          "$iGRVT50"
-#define TCMD_COMMAND_SVCON          "SVCON"
-#define TCMD_COMMAND_TMREQ          "TMREQ"
-#define TCMD_COMMAND_DIAG           "DIAG"
-#define TCMD_COMMAND_MODE           "MODE"
-#define TCMD_ACK_DATA               "Ack"
-#define TCMD_RX_LINE_SIZE           512U
-#define TCMD_HEATER_CHANNEL_COUNT   4U
-#define TCMD_SP_CHANNEL_COUNT       1U
-#define TCMD_LPV_FIELD_OFFSET       2U
-#define TCMD_HPV_FIELD_OFFSET       (TCMD_LPV_FIELD_OFFSET + LPSOLVALVE_CHANNEL_COUNT)
-#define TCMD_HTR_FIELD_OFFSET       (TCMD_HPV_FIELD_OFFSET + HPSOLVALVE_CHANNEL_COUNT)
-#define TCMD_SP_FIELD_OFFSET        (TCMD_HTR_FIELD_OFFSET + TCMD_HEATER_CHANNEL_COUNT)
-#define TCMD_TMREQ_FIELD_COUNT      2U
-#define TCMD_DIAG_FIELD_COUNT       2U
-#define TCMD_MODE_FIELD_COUNT       3U
-#define TCMD_SVCON_FIELD_COUNT      (TCMD_SP_FIELD_OFFSET + TCMD_SP_CHANNEL_COUNT)
-#define TCMD_MAX_FIELD_COUNT        TCMD_SVCON_FIELD_COUNT
 #define OPU_HEATER_PE_SAFE_MASK     ((1UL << 0) | (1UL << 1) | (1UL << 3) | (1UL << 4))
 #define OPU_SPARK_PLUG_PC5_MASK     (1UL << 5)
 #define TC_TASK_PERIOD_MS           1000UL
@@ -98,11 +75,8 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define OPU_TIMER_CLOCK_HZ          (OPU_TIMER_MCK_HZ / 128UL)
 #define OPU_TIMER_RC_COUNT          (((OPU_TIMER_CLOCK_HZ * OPU_TIMER_TICK_MS) + 500UL) / 1000UL)
 #define OPU_TIMER_CALLBACK_MAX      8U
-#define RSTASK_NOTIFY_RX_READY      (1UL << 0)
-#define RSTASK_NOTIFY_TM_EVENT      (1UL << 1)
 #define TC_TASK_PRIORITY            (tskIDLE_PRIORITY)
 #define ADC_TASK_PRIORITY           (tskIDLE_PRIORITY)
-#define RS_TASK_PRIORITY            (tskIDLE_PRIORITY + 3U)
 
 /*==============================================================================
  * Local Function
@@ -113,16 +87,6 @@ static void TcTask(void *p);
 /*-------- ADC Processing --------*/
 static void AdcTask(void *p);
 
-/*-------- RS422 Processing --------*/
-static void RsTask(void *p);
-static void RsTask_SendSensorPacket( void );
-static void RsTask_SendAckPacket( void );
-static void RsTask_SendDiagPacket( void );
-static void RsTask_ProcessRx( void );
-static void RsTask_ProcessTelecommandLine( char *line );
-static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode );
-static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
-                                     const UInt8 *heaterState, UInt8 spState );
 static void Opu_10msCallback( void *context );
 static void Opu_100msCallback( void *context );
 static void Opu_1000msCallback( void *context );
@@ -241,160 +205,6 @@ static void AdcTask(void *p)
 	}
 }
 
-static void RsTask_SendSensorPacket( void )
-{
-    sSensorScan stScan;
-    UInt32 uiPacketTick;
-    const char *pcModeName;
-    char cTxMsg[240];
-    int iTxLen;
-
-    Sensor_GetScan( &stScan );
-    uiPacketTick = (UInt32)xTaskGetTickCount();
-    pcModeName = StateMachine_GetModeName( StateMachine_GetMode() );
-
-    iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
-                       "$iGRVT50,%lu,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
-                       (unsigned long)uiPacketTick,
-                       pcModeName,
-                       (long)stScan.pt.adcMilliVolt[SENSOR_PT1_INDEX],
-                       (long)stScan.pt.adcMilliVolt[1U],
-                       (long)stScan.pt.adcMilliVolt[2U],
-                       (long)stScan.pt.adcMilliVolt[3U],
-                       (long)stScan.pt.adcMilliVolt[4U],
-                       (long)stScan.pt.adcMilliVolt[5U],
-                       (long)stScan.pt.adcMilliVolt[6U],
-                       (long)stScan.pt.adcMilliVolt[7U],
-                       (long)stScan.pt.adcMilliVolt[8U],
-                       (long)stScan.tc.microVolt[SENSOR_TC1_INDEX],
-                       (long)stScan.tc.microVolt[1U],
-                       (long)stScan.tc.microVolt[2U],
-                       (long)stScan.tc.microVolt[3U] );
-    if( iTxLen < 0 )
-    {
-        return;
-    }
-    if( iTxLen >= (int)sizeof(cTxMsg) )
-    {
-        iTxLen = (int)sizeof(cTxMsg) - 1;
-    }
-
-    UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
-}
-
-static void RsTask_SendAckPacket( void )
-{
-    UartComm_SendStringBlocking( TCMD_PACKET_HEADER "," TCMD_ACK_DATA "\r\n" );
-}
-
-static UInt8 RsTask_ParseBinaryField( const char *text, UInt8 *value )
-{
-    if( (text == NULL) || (value == NULL) )
-    {
-        return 0U;
-    }
-
-    if( ((text[0] == '0') || (text[0] == '1')) && (text[1] == '\0') )
-    {
-        *value = (UInt8)(text[0] - '0');
-        return 1U;
-    }
-
-    return 0U;
-}
-
-static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode )
-{
-    if( (text == NULL) || (mode == NULL) )
-    {
-        return 0U;
-    }
-
-    if( (strcmp( text, "0" ) == 0) ||
-        (strcmp( text, "INIT" ) == 0) ||
-        (strcmp( text, "init" ) == 0) ||
-        (strcmp( text, "init_mode" ) == 0) )
-    {
-        *mode = STATE_MACHINE_INIT_MODE;
-        return 1U;
-    }
-
-    if( (strcmp( text, "1" ) == 0) ||
-        (strcmp( text, "NORMAL" ) == 0) ||
-        (strcmp( text, "normal" ) == 0) ||
-        (strcmp( text, "normal_mode" ) == 0) )
-    {
-        *mode = STATE_MACHINE_NORMAL_MODE;
-        return 1U;
-    }
-
-    if( (strcmp( text, "2" ) == 0) ||
-        (strcmp( text, "RUN" ) == 0) ||
-        (strcmp( text, "run" ) == 0) ||
-        (strcmp( text, "run_mode" ) == 0) )
-    {
-        *mode = STATE_MACHINE_RUN_MODE;
-        return 1U;
-    }
-
-    if( (strcmp( text, "3" ) == 0) ||
-        (strcmp( text, "DIAG" ) == 0) ||
-        (strcmp( text, "diag" ) == 0) ||
-        (strcmp( text, "DIAGNOSTIC" ) == 0) ||
-        (strcmp( text, "diagnostic" ) == 0) ||
-        (strcmp( text, "diagnostic_mode" ) == 0) )
-    {
-        *mode = STATE_MACHINE_DIAGNOSTIC_MODE;
-        return 1U;
-    }
-
-    return 0U;
-}
-
-static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
-                                     const UInt8 *heaterState, UInt8 spState )
-{
-    UInt8 i;
-
-    if( (lpvState == NULL) || (hpvState == NULL) || (heaterState == NULL) )
-    {
-        return;
-    }
-
-    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
-    {
-        LpSolValve_Set( (UInt8)(i + 1U), lpvState[i] );
-    }
-
-    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
-    {
-        HpSolValve_Set( (UInt8)(i + 1U), hpvState[i] );
-    }
-
-    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
-    {
-        Heater_SetDuty( (UInt8)(i + 1U), (heaterState[i] != 0U) ? 100U : 0U );
-    }
-
-    SparkPlug_Set( spState );
-}
-
-static char s_tcmdRxLine[TCMD_RX_LINE_SIZE];
-static UInt16 s_tcmdRxLen = 0U;
-static volatile UInt32 s_tcmdRxLineCount = 0U;
-static volatile UInt32 s_tcmdRxNoHeaderCount = 0U;
-static volatile UInt32 s_tcmdRxHeaderCount = 0U;
-static volatile UInt32 s_tcmdRxBadFieldCount = 0U;
-static volatile UInt32 s_tcmdRxBadBinaryCount = 0U;
-static volatile UInt32 s_tcmdRxUnknownCommandCount = 0U;
-static volatile UInt32 s_tcmdTmreqCount = 0U;
-static volatile UInt32 s_tcmdSvconCount = 0U;
-static volatile UInt32 s_tcmdDiagCount = 0U;
-static volatile UInt32 s_tcmdModeCount = 0U;
-static volatile UInt32 s_tcmdAckSentCount = 0U;
-static volatile UInt32 s_tcmdRxOverflowCount = 0U;
-static volatile UInt16 s_tcmdLastLineLen = 0U;
-static UInt16 s_tcmdRxSkipLen = 0U;
 static volatile UInt32 s_opuTimerTickCount = 0U;
 static volatile UInt32 s_opu10msCallbackCount = 0U;
 static volatile UInt32 s_opu100msCallbackCount = 0U;
@@ -410,295 +220,6 @@ typedef struct
 } sOpuTimerCallbackEntry;
 
 static sOpuTimerCallbackEntry s_opuTimerCallbacks[OPU_TIMER_CALLBACK_MAX];
-
-static void RsTask_SendDiagPacket( void )
-{
-    UInt32 uiPacketTick;
-    char cTxMsg[320];
-    int iTxLen;
-
-    uiPacketTick = (UInt32)xTaskGetTickCount();
-    iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
-                       "$iGRVT50,DIAG,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu,%u\r\n",
-                       (unsigned long)uiPacketTick,
-                       (unsigned long)UartComm_GetRxByteCount(),
-                       (unsigned long)UartComm_GetRxDropCount(),
-                       (unsigned long)UartComm_GetRxErrorCount(),
-                       (unsigned long)s_tcmdRxLineCount,
-                       (unsigned long)s_tcmdRxNoHeaderCount,
-                       (unsigned long)s_tcmdRxHeaderCount,
-                       (unsigned long)s_tcmdRxBadFieldCount,
-                       (unsigned long)s_tcmdRxBadBinaryCount,
-                       (unsigned long)s_tcmdRxUnknownCommandCount,
-                       (unsigned long)s_tcmdTmreqCount,
-                       (unsigned long)s_tcmdSvconCount,
-                       (unsigned long)s_tcmdAckSentCount,
-                       (unsigned long)s_tcmdRxOverflowCount,
-                       (unsigned)s_tcmdLastLineLen );
-    if( iTxLen < 0 )
-    {
-        return;
-    }
-    if( iTxLen >= (int)sizeof(cTxMsg) )
-    {
-        iTxLen = (int)sizeof(cTxMsg) - 1;
-    }
-
-    UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
-}
-
-static void RsTask_ProcessTelecommandLine( char *line )
-{
-    char *start;
-    char *next;
-    char *token;
-    char *fields[TCMD_MAX_FIELD_COUNT + 1U];
-    UInt8 fieldCount = 0U;
-    UInt8 lpvState[LPSOLVALVE_CHANNEL_COUNT];
-    UInt8 hpvState[HPSOLVALVE_CHANNEL_COUNT];
-    UInt8 heaterState[TCMD_HEATER_CHANNEL_COUNT];
-    UInt8 spState;
-    eStateMachineMode requestedMode;
-    UInt8 i;
-
-    if( line == NULL )
-    {
-        return;
-    }
-
-    s_tcmdRxLineCount++;
-    s_tcmdLastLineLen = (UInt16)strlen( line );
-
-    start = strstr( line, TCMD_PACKET_HEADER );
-    if( start == NULL )
-    {
-        s_tcmdRxNoHeaderCount++;
-        return;
-    }
-    s_tcmdRxHeaderCount++;
-
-    while( (next = strstr( start + 1, TCMD_PACKET_HEADER )) != NULL )
-    {
-        start = next;
-    }
-
-    token = strtok( start, "," );
-    while( (token != NULL) && (fieldCount < (TCMD_MAX_FIELD_COUNT + 1U)) )
-    {
-        fields[fieldCount] = token;
-        fieldCount++;
-        token = strtok( NULL, "," );
-    }
-
-    if( fieldCount < TCMD_TMREQ_FIELD_COUNT )
-    {
-        s_tcmdRxBadFieldCount++;
-        return;
-    }
-
-    if( strcmp( fields[0], TCMD_PACKET_HEADER ) != 0 )
-    {
-        s_tcmdRxNoHeaderCount++;
-        return;
-    }
-
-    if( strcmp( fields[1], TCMD_COMMAND_TMREQ ) == 0 )
-    {
-        if( fieldCount == TCMD_TMREQ_FIELD_COUNT )
-        {
-            s_tcmdTmreqCount++;
-            RsTask_SendSensorPacket();
-        }
-        else
-        {
-            s_tcmdRxBadFieldCount++;
-        }
-        return;
-    }
-
-    if( strcmp( fields[1], TCMD_COMMAND_DIAG ) == 0 )
-    {
-        if( fieldCount == TCMD_DIAG_FIELD_COUNT )
-        {
-            s_tcmdDiagCount++;
-            RsTask_SendDiagPacket();
-        }
-        else
-        {
-            s_tcmdRxBadFieldCount++;
-        }
-        return;
-    }
-
-    if( strcmp( fields[1], TCMD_COMMAND_MODE ) == 0 )
-    {
-        if( (fieldCount == TCMD_MODE_FIELD_COUNT) &&
-            (RsTask_ParseModeField( fields[2], &requestedMode ) != 0U) &&
-            (StateMachine_RequestMode( requestedMode ) != 0U) )
-        {
-            s_tcmdModeCount++;
-            s_tcmdAckSentCount++;
-            RsTask_SendAckPacket();
-        }
-        else
-        {
-            s_tcmdRxBadFieldCount++;
-        }
-        return;
-    }
-
-    if( strcmp( fields[1], TCMD_COMMAND_SVCON ) != 0 )
-    {
-        s_tcmdRxUnknownCommandCount++;
-        return;
-    }
-
-    if( fieldCount != TCMD_SVCON_FIELD_COUNT )
-    {
-        s_tcmdRxBadFieldCount++;
-        return;
-    }
-
-    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
-    {
-        if( RsTask_ParseBinaryField( fields[TCMD_LPV_FIELD_OFFSET + i], &lpvState[i] ) == 0U )
-        {
-            s_tcmdRxBadBinaryCount++;
-            return;
-        }
-    }
-
-    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
-    {
-        if( RsTask_ParseBinaryField( fields[TCMD_HPV_FIELD_OFFSET + i], &hpvState[i] ) == 0U )
-        {
-            s_tcmdRxBadBinaryCount++;
-            return;
-        }
-    }
-
-    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
-    {
-        if( RsTask_ParseBinaryField( fields[TCMD_HTR_FIELD_OFFSET + i], &heaterState[i] ) == 0U )
-        {
-            s_tcmdRxBadBinaryCount++;
-            return;
-        }
-    }
-
-    if( RsTask_ParseBinaryField( fields[TCMD_SP_FIELD_OFFSET], &spState ) == 0U )
-    {
-        s_tcmdRxBadBinaryCount++;
-        return;
-    }
-
-    s_tcmdSvconCount++;
-    s_tcmdAckSentCount++;
-    /* Ack means the SVCON packet was accepted, not that valve actuation is complete. */
-    RsTask_SendAckPacket();
-    RsTask_ApplyTelecommand( lpvState, hpvState, heaterState, spState );
-}
-
-static void RsTask_ProcessRx( void )
-{
-    sRbData rxData;
-    UInt32 i;
-
-    while( UartComm_Read( &rxData ) >= 0 )
-    {
-        for( i = 0U; i < rxData.usSize; i++ )
-        {
-            char ch = (char)rxData.ucData[i];
-
-            if( s_tcmdRxLen == 0U )
-            {
-                if( ch == '$' )
-                {
-                    s_tcmdRxLine[0] = ch;
-                    s_tcmdRxLen = 1U;
-                    s_tcmdRxSkipLen = 0U;
-                }
-                else if( ch == '\n' )
-                {
-                    if( s_tcmdRxSkipLen != 0U )
-                    {
-                        s_tcmdRxLineCount++;
-                        s_tcmdRxNoHeaderCount++;
-                        s_tcmdLastLineLen = s_tcmdRxSkipLen;
-                        s_tcmdRxSkipLen = 0U;
-                    }
-                }
-                else if( ch != '\r' )
-                {
-                    if( s_tcmdRxSkipLen < 0xFFFFU )
-                    {
-                        s_tcmdRxSkipLen++;
-                    }
-                }
-            }
-            else if( ch == '\n' )
-            {
-                s_tcmdRxLine[s_tcmdRxLen] = '\0';
-                RsTask_ProcessTelecommandLine( s_tcmdRxLine );
-                s_tcmdRxLen = 0U;
-                s_tcmdRxSkipLen = 0U;
-            }
-            else if( ch == '\r' )
-            {
-                /* Wait for LF. */
-            }
-            else if( ch == '$' )
-            {
-                s_tcmdRxLine[0] = ch;
-                s_tcmdRxLen = 1U;
-                s_tcmdRxSkipLen = 0U;
-            }
-            else if( s_tcmdRxLen < (TCMD_RX_LINE_SIZE - 1U) )
-            {
-                s_tcmdRxLine[s_tcmdRxLen] = ch;
-                s_tcmdRxLen++;
-            }
-            else
-            {
-                s_tcmdRxOverflowCount++;
-                s_tcmdRxLen = 0U;
-            }
-        }
-    }
-}
-
-/*-------- RS422 Processing --------*/
- /**
- * @fn RsTask
- * @brief RS422 처리 Thread
- * @param void *p
- * @return void
- * @date 2025-12-18
- */
-static void RsTask(void *p)
-{
-    UInt32 notifyValue;
-
-    /* RS485-style telemetry/telecommand on USART1 (PA21 RXD1 / PB4 TXD1, PA22 DE, PA24 /RE) */
-    UartComm_Init( UARTCOMM_DEFAULT_BAUDRATE );
-    UartComm_SetRxNotifyTask( xTaskGetCurrentTaskHandle(), RSTASK_NOTIFY_RX_READY );
-
-	while(1)
-	{
-        RsTask_ProcessRx();
-        if( xTaskNotifyWait( 0U, 0xFFFFFFFFUL, &notifyValue, portMAX_DELAY ) == pdTRUE )
-        {
-            if( (notifyValue & RSTASK_NOTIFY_RX_READY) != 0U )
-            {
-                RsTask_ProcessRx();
-            }
-            if( (notifyValue & RSTASK_NOTIFY_TM_EVENT) != 0U )
-            {
-                RsTask_SendSensorPacket();
-            }
-        }
-	}
-}
 
 void __attribute__((used)) TC1_CH0_Handler( void )
 {
@@ -845,10 +366,7 @@ static void TaskCreate( void )
 	/* --- TC Task --- */
 	xTaskCreate( TcTask, "TcTask", SCDAU_STACK_SIZE, NULL, TC_TASK_PRIORITY, &xTcTask );
 
-	/* --- RS422 Task --- */
-	xTaskCreate( RsTask, "RsTask", SCDAU_STACK_SIZE, NULL, RS_TASK_PRIORITY, &xRsTask );
-
-    /* --- RS422 Task --- */
+    /* --- ADC Task --- */
 	xTaskCreate( AdcTask, "AdcTask", SCDAU_STACK_SIZE, NULL, ADC_TASK_PRIORITY, &xAdcTask );
 }
 
@@ -1326,15 +844,12 @@ void OpuTask( void *pvParameters )
 
     LpSolValve_Init();
 
-    /* Start RS485 RX before the slow HPV driver wake/config sequence. */
-    UartComm_Init( UARTCOMM_DEFAULT_BAUDRATE );
-
     HpSolValve_Init();
-
-    /* Task 생성 */
-	TaskCreate();
-    UartComm_SetRxNotifyTask( xRsTask, RSTASK_NOTIFY_RX_READY );
     StateMachine_Init();
+
+    /* Start sensor workers, then publish CSP readiness after full startup. */
+	TaskCreate();
+    (void)SamCspRuntime_Init();
     OpuTimer_RegisterDefaultCallbacks();
     OpuTimer_Init();
 

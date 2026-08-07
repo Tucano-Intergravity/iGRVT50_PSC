@@ -22,8 +22,12 @@
 #include <time.h>			// 시간과 관련된 라이브러리
 #include <sys/time.h>		// 시간 관련 라이브러리
 
+#include "FreeRTOS.h"
+#include "task.h"
 #include "sam_ctl.h"
-#include "uartcomm.h"
+#include <csp/sam_csp_runtime.h>
+#include <csp/sam_csp_service.h>
+#include <csp_rs485_link.h>
 
 
 /*==============================================================================
@@ -35,7 +39,6 @@ void DbgTask( void *pvParameters );										// DBG Task
  * Gloabal Variables
  *============================================================================*/
 UInt16 usTcPrn;
-UInt16 usRs422Loop = 0U;   /* Default OFF for telemetry/telecommand monitoring. Use 'uart 1' only for echo tests. */
 UInt16 usAdcPrn;
 
 /*==============================================================================
@@ -462,11 +465,7 @@ static int testTcLogFunc(int argc, char *argv[])
 	UInt16 usDbgCmd;
 	if(argc<2)
 	{
-		printf( "RS422 Loopback=%u RX bytes=%lu drops=%lu errors=%lu\r\n",
-		        (unsigned)usRs422Loop,
-		        (unsigned long)UartComm_GetRxByteCount(),
-		        (unsigned long)UartComm_GetRxDropCount(),
-		        (unsigned long)UartComm_GetRxErrorCount() );
+		printf( "TC LOG cmd : %u\r\n", (unsigned)usTcPrn );
 	}
 	else
 	{
@@ -1109,24 +1108,6 @@ static int testPcalFunc(int argc, char *argv[])
 	return(0);
 }
 
-static int testUartLogFunc(int argc, char *argv[])
-{
-	UInt16 usDbgCmd;
-	if(argc<2)
-	{
-		printf("cmd err\r\n");
-	}
-	else
-	{
-		usDbgCmd = htoi(argv[1]);
-		usRs422Loop = usDbgCmd;
-		printf( "RS422 Loopback Control cmd : %d\r\n", usRs422Loop );
-
-	}
-
-	return(0);					// '0' 리턴
-}
-
 /**
  * @fn testLpvFunc
  * @brief LP 밸브(PWM 6ch) 제어 검증 : lpv <1~6> <0/1>
@@ -1206,22 +1187,6 @@ static int testHtrRegFunc(int argc, char *argv[])
 	        (unsigned long)TC3_REGS->TC_CHANNEL[0].TC_CMR );
 	return(0);
 }
-
-/* [디버그] RS485(USART1) 단독 송신 테스트 : rs485 [count] [hexbyte]
- * PA22=DE, PA24=/RE를 TX 동안만 High로 올려 차동라인(Y/Z) 송신.
- * 기본 0x55를 2000회 연속 송신 -> 스코프로 차동 파형/보레이트 확인 */
-static int testRs485Func(int argc, char *argv[])
-{
-	UInt32 n = 2000U;
-	UInt8  b = 0x55U;
-	if( argc >= 2 ) n = (UInt32)atoi( argv[1] );
-	if( argc >= 3 ) b = (UInt8)htoi( argv[2] );
-	printf( "RS485 TX: 0x%02X x %lu @921600 ...\r\n", (unsigned)b, (unsigned long)n );
-	UartComm_SendByteRepeatBlocking( b, n );
-	printf( "RS485 TX done\r\n" );
-	return(0);
-}
-
 
 /**
  * @fn testHpvFunc
@@ -2289,6 +2254,72 @@ static int testAmapFunc(int argc, char *argv[])
     }
     return(0);
 }
+static UBaseType_t cspStackHighWatermark( TaskHandle_t task )
+{
+    if( task == NULL )
+    {
+        return 0U;
+    }
+
+    return uxTaskGetStackHighWaterMark( task );
+}
+
+static int testCspFunc( int argc, char *argv[] )
+{
+    sam_csp_runtime_status_t runtime;
+    csp_rs485_health_t link;
+    sam_csp_service_counters_t service;
+    TaskHandle_t routerTask;
+    TaskHandle_t serviceTask;
+    TaskHandle_t linkTask;
+
+    (void)argc;
+    (void)argv;
+
+    SamCspRuntime_GetStatus( &runtime );
+    csp_rs485_link_get_health( &link );
+    sam_csp_service_get_counters( &service );
+    routerTask = SamCspRuntime_GetRouterTaskHandle();
+    serviceTask = SamCspRuntime_GetServiceTaskHandle();
+    linkTask = xTaskGetHandle( "csp-rs485" );
+
+    printf( "CSP runtime ready=%u init_code=%d\r\n",
+            (unsigned)(runtime.ready ? 1U : 0U), runtime.init_code );
+    printf( "CSP link state=%u last_error=%u uart_errors=%lu dma_errors=%lu "
+            "tx_timeouts=%lu tx_failures=%lu protocol_errors=%lu "
+            "stream_dropped_bytes=%lu stream_high_watermark=%lu "
+            "stream_discontinuities=%lu recovery_attempts=%lu "
+            "recovery_successes=%lu recovery_failures=%lu\r\n",
+            (unsigned)link.state,
+            (unsigned)link.last_error,
+            (unsigned long)link.uart_errors,
+            (unsigned long)link.dma_errors,
+            (unsigned long)link.tx_timeouts,
+            (unsigned long)link.tx_failures,
+            (unsigned long)link.protocol_errors,
+            (unsigned long)link.stream_dropped_bytes,
+            (unsigned long)link.stream_high_watermark,
+            (unsigned long)link.stream_discontinuities,
+            (unsigned long)link.recovery_attempts,
+            (unsigned long)link.recovery_successes,
+            (unsigned long)link.recovery_failures );
+    printf( "CSP service malformed_packets=%lu allocation_failures=%lu "
+            "send_failures=%lu rejected_peers=%lu dropped_ports=%lu\r\n",
+            (unsigned long)service.malformed_packets,
+            (unsigned long)service.allocation_failures,
+            (unsigned long)service.send_failures,
+            (unsigned long)service.rejected_peers,
+            (unsigned long)service.dropped_ports );
+    printf( "CSP memory min_free_heap=%lu router_hwm=%lu service_hwm=%lu "
+            "link_hwm=%lu\r\n",
+            (unsigned long)xPortGetMinimumEverFreeHeapSize(),
+            (unsigned long)cspStackHighWatermark( routerTask ),
+            (unsigned long)cspStackHighWatermark( serviceTask ),
+            (unsigned long)cspStackHighWatermark( linkTask ) );
+
+    return 0;
+}
+
 /**
  * @fn UsrCmdList
  * @brief Initialize and list user commands
@@ -2311,7 +2342,7 @@ static void UsrCmdList(void)
 	UsrCmdSet( "adc",  testAdcLogFunc,"AFEC analog log on/off",'N',"\0");
 	UsrCmdSet( "acal", testAcalFunc,  "28V 전류센스 보정: acal off(0A) / acal gain <A>(known I)",'N',"\0");
 	UsrCmdSet( "pcal", testPcalFunc,  "압력 게인 보정: 주입V 인가하고 pcal <V>",'N',"\0");
-    UsrCmdSet( "uart", testUartLogFunc,"RS422 USART1 status or loopback: uart [0|1]",'N',"\0");
+    UsrCmdSet( "csp",  testCspFunc,    "CSP runtime, link, service, heap, and stack status",'N',"\0");
     UsrCmdSet( "safe", testSafeFunc,  "EMERGENCY: all actuators OFF (HP/micro/heater)",'N',"\0");
     UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-F1/F2/O1/O2 (0.5~4.5V, %FS)",'N',"\0");
     UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TT-F1~F3/O1~O3 (K-type, degC)",'N',"\0");
@@ -2321,7 +2352,6 @@ static void UsrCmdList(void)
     UsrCmdSet( "htr",  testHtrFunc,   "Heater: htr <1-4> <0-100>",'N',"\0");
     UsrCmdSet( "sp",   testSpFunc,    "Spark plug: sp <0|1> (PC5 GPIO)",'N',"\0");
     UsrCmdSet( "htrreg", testHtrRegFunc, "TC3 reg dump (timer/duty check)",'N',"\0");
-    UsrCmdSet( "rs485", testRs485Func, "RS485 USART1 TX test: rs485 [count] [hexbyte]",'N',"\0");
     UsrCmdSet( "araw", testAdcRawFunc, "AFEC1 raw scan CH0-11",'N',"\0");
     UsrCmdSet( "pinst", testPinstFunc, "PC12/15/29/30 PIO+AFEC 실태덤프",'N',"\0");
     UsrCmdSet( "ascan", testAscanFunc, "AFEC1 전채널 스캔(2.54V 위치찾기)",'N',"\0");

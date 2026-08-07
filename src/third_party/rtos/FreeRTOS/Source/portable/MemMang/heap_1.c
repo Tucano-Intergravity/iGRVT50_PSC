@@ -150,3 +150,10 @@ size_t xPortGetFreeHeapSize( void )
 {
     return( configADJUSTED_HEAP_SIZE - xNextFreeByte );
 }
+
+/* heap_1 never releases storage, so current free space is also the
+ * minimum-ever free space. */
+size_t xPortGetMinimumEverFreeHeapSize( void )
+{
+    return( configADJUSTED_HEAP_SIZE - xNextFreeByte );
+}

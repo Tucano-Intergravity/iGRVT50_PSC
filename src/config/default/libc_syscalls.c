@@ -24,6 +24,7 @@
 // DOM-IGNORE-END
 
 #include <stdio.h>
+#include <stddef.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <stdbool.h>
@@ -40,6 +41,41 @@ extern "C" {
  * We implement only the syscalls we want over the stubs provided by libpic32c
  */
 extern void _exit(int status);
+
+/* XC32 declares the POSIX-compatible routine as a builtin but its embedded
+ * C library does not provide the symbol required by libcsp's interface list. */
+int strncasecmp(const char *left, const char *right, size_t count)
+{
+    size_t index;
+
+    for (index = 0U; index < count; index++)
+    {
+        unsigned char leftChar = (unsigned char)left[index];
+        unsigned char rightChar = (unsigned char)right[index];
+        unsigned char leftFolded = leftChar;
+        unsigned char rightFolded = rightChar;
+
+        if ((leftChar >= (unsigned char)'A') &&
+            (leftChar <= (unsigned char)'Z'))
+        {
+            leftFolded = (unsigned char)(leftChar +
+                ((unsigned char)'a' - (unsigned char)'A'));
+        }
+        if ((rightChar >= (unsigned char)'A') &&
+            (rightChar <= (unsigned char)'Z'))
+        {
+            rightFolded = (unsigned char)(rightChar +
+                ((unsigned char)'a' - (unsigned char)'A'));
+        }
+        if ((leftFolded != rightFolded) || (leftChar == 0U) ||
+            (rightChar == 0U))
+        {
+            return (int)leftFolded - (int)rightFolded;
+        }
+    }
+
+    return 0;
+}
 
 void _exit(int status)
 {

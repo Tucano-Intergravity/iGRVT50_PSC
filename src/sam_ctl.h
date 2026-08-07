@@ -74,10 +74,6 @@ extern UInt16 ReadAFEC1Channel( AFEC_CHANNEL_NUM channel );
 extern void AFEC0_SeqConvert( UInt32 chMask );
 extern void AFEC1_SeqConvert( UInt32 chMask );
 
-/* --- RS422 (USART1) --- */
-extern void RS422_Init( UInt32 uiBaudRate );
-extern void RS485_SetTransmit( UInt8 ucEnable );
-
 /* --- 안전 --- */
 extern void EnterSafeState( void );    /* 모든 액추에이터 강제 OFF (폴트/리셋/명령) */
 
@@ -116,7 +112,6 @@ extern UInt16 DRV3946_ChCtrl( UInt8 ch1, UInt8 ch2 );
  * Global Variables Define
  *============================================================================*/
 extern UInt16 usTcPrn;
-extern UInt16 usRs422Loop;
 extern UInt16 usAdcPrn;
 
 
@@ -344,47 +339,5 @@ typedef struct {
     float fSp8;         // AFEC0 CH8 (PA19) 여유핀
     float fSp9;         // AFEC0 CH9 (PA20) 여유핀 - 점퍼검증용
 }__attribute__((packed)) sAdcTemp;
-
- /*==============================================================================
- * RS422_TASK
- *============================================================================*/
-
-/* Baud Rate */
-#define BAUDRATE_2400     3906   // 150,000,000 / (16 * 2400)
-#define BAUDRATE_4800     1953   // 150,000,000 / (16 * 4800)
-#define BAUDRATE_9600      976   // 150,000,000 / (16 * 9600)
-#define BAUDRATE_14400     651   // 150,000,000 / (16 * 14400)
-#define BAUDRATE_19200     488   // 150,000,000 / (16 * 19200)
-#define BAUDRATE_28800     325   // 150,000,000 / (16 * 28800)
-#define BAUDRATE_38400     244   // 150,000,000 / (16 * 38400)
-#define BAUDRATE_57600     162   // 150,000,000 / (16 * 57600)
-#define BAUDRATE_76800     122   // 150,000,000 / (16 * 76800)
-#define BAUDRATE_115200     81   // 150,000,000 / (16 * 115200)
-#define BAUDRATE_153600     61   // 150,000,000 / (16 * 153600)
-#define BAUDRATE_230400     40   // 150,000,000 / (16 * 230400)
-#define BAUDRATE_460800     20   // 150,000,000 / (16 * 460800)
-#define BAUDRATE_921600     10   // 150,000,000 / (16 * 921600)
-
-
- /*==============================================================================
- * OPU_TASK
- *============================================================================*/
-#define MAX_RB_DATA 16
-
-/* Ring buffer 정보 */
-typedef struct
-{
-	UInt32 uiAddr;			// DDR3 시작 주소
-	SInt32 siFront;			// Ring buffer Front
-	SInt32 siRear;			// Ring buffer Rear
-	SInt32 siCount;			// Ring buffer Count
-} __attribute__((packed)) sRingBufInfo;
-
-/* Ring buffer 저장 데이터 구조체 */
-typedef struct
-{
-	UInt32 usSize;					// 데이터 사이즈
-	UInt8 ucData[MAX_RB_DATA];		// 데이터
-} __attribute__((packed)) sRbData;
 
 #endif 			//__COMMON_H__
