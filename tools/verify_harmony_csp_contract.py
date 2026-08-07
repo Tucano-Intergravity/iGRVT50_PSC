@@ -67,7 +67,7 @@ def strip_comments(text: str) -> str:
 
 def strip_inactive_if_zero(text: str) -> str:
     output: list[str] = []
-    frames: list[tuple[bool, bool]] = []
+    frames: list[tuple[bool, bool, bool]] = []
     active = True
     directive_re = re.compile(
         r"^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b(.*)$"
@@ -76,11 +76,10 @@ def strip_inactive_if_zero(text: str) -> str:
     def blank(line: str) -> str:
         return re.sub(r"[^\r\n]", " ", line)
 
-    def literal_zero(expression: str) -> bool:
+    def directive_condition(expression: str) -> bool | None:
         expression = strip_comments(expression).strip()
-        while expression.startswith("(") and expression.endswith(")"):
-            expression = expression[1:-1].strip()
-        return re.fullmatch(r"0[uUlL]*", expression) is not None
+        value = c_integer_literal(expression)
+        return None if value is None else value != 0
 
     for line in text.splitlines(keepends=True):
         directive = directive_re.match(line.rstrip("\r\n"))
@@ -90,20 +89,26 @@ def strip_inactive_if_zero(text: str) -> str:
 
         name, argument = directive.groups()
         if name in ("if", "ifdef", "ifndef"):
-            known_false = name == "if" and literal_zero(argument)
-            frames.append((active, known_false))
-            active = active and not known_false
+            condition = directive_condition(argument) if name == "if" else None
+            determinate = condition is not None
+            branch_taken = condition is True
+            frames.append((active, branch_taken, determinate))
+            active = active and branch_taken
         elif name == "elif" and frames:
-            parent_active, previous_known_false = frames[-1]
-            known_false = previous_known_false and literal_zero(argument)
-            frames[-1] = (parent_active, known_false)
-            active = parent_active and not known_false
+            parent_active, branch_taken, determinate = frames[-1]
+            condition = directive_condition(argument)
+            determinate = determinate and condition is not None
+            selected = determinate and not branch_taken and condition is True
+            branch_taken = branch_taken or selected
+            frames[-1] = (parent_active, branch_taken, determinate)
+            active = parent_active and selected
         elif name == "else" and frames:
-            parent_active, previous_known_false = frames[-1]
-            active = parent_active
-            frames[-1] = (parent_active, False)
+            parent_active, branch_taken, determinate = frames[-1]
+            selected = determinate and not branch_taken
+            frames[-1] = (parent_active, True, determinate)
+            active = parent_active and selected
         elif name == "endif" and frames:
-            parent_active, _known_false = frames.pop()
+            parent_active, _branch_taken, _determinate = frames.pop()
             active = parent_active
         output.append(blank(line))
     return "".join(output)
@@ -333,7 +338,7 @@ def verify_pio_initialization(check: Verification) -> None:
     text = check.read_text(PIO_C_PATH)
     if text is None:
         return
-    bodies = function_bodies(strip_comments(text), "PIO_Initialize")
+    bodies = function_bodies(c_code_only(text), "PIO_Initialize")
     if len(bodies) != 1:
         check.fail(
             PIO_C_PATH,
@@ -510,21 +515,26 @@ def verify_get_macro(check: Verification, name: str, replacement: str, bit: int)
     )
     expression = strip_wrapping_parentheses(expression)
     masked = split_top_level_operator(expression, "&")
-    shifted = (
-        split_top_level_operator(strip_wrapping_parentheses(masked[0]), ">>")
-        if masked is not None
-        else None
-    )
-    register_ok = (
-        shifted is not None
-        and re.fullmatch(
-            r"PIOA_REGS\s*->\s*PIO_PDSR", strip_wrapping_parentheses(shifted[0])
+
+    def shifted_pdsr(expression: str) -> bool:
+        shifted = split_top_level_operator(
+            strip_wrapping_parentheses(expression), ">>"
         )
-        is not None
+        return (
+            shifted is not None
+            and re.fullmatch(
+                r"PIOA_REGS\s*->\s*PIO_PDSR",
+                strip_wrapping_parentheses(shifted[0]),
+            )
+            is not None
+            and c_integer_literal(shifted[1]) == bit
+        )
+
+    valid = masked is not None and (
+        (shifted_pdsr(masked[0]) and c_integer_literal(masked[1]) == 1)
+        or (shifted_pdsr(masked[1]) and c_integer_literal(masked[0]) == 1)
     )
-    shift = c_integer_literal(shifted[1]) if shifted is not None else None
-    mask = c_integer_literal(masked[1]) if masked is not None else None
-    if not register_ok or shift != bit or mask != 1:
+    if not valid:
         check.fail(
             PIO_H_PATH,
             f"{name} must read PIOA PDSR bit {bit}",
@@ -590,6 +600,32 @@ def find_if_blocks(text: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def sole_if_block(text: str) -> tuple[str, str] | None:
+    match = re.match(r"\s*if\s*\(", text)
+    if match is None:
+        return None
+    open_paren = match.end() - 1
+    try:
+        close_paren = matching_delimiter(text, open_paren, "(", ")")
+    except ValueError:
+        return None
+    open_brace = close_paren + 1
+    while open_brace < len(text) and text[open_brace].isspace():
+        open_brace += 1
+    if open_brace >= len(text) or text[open_brace] != "{":
+        return None
+    try:
+        close_brace = matching_delimiter(text, open_brace, "{", "}")
+    except ValueError:
+        return None
+    if text[close_brace + 1 :].strip():
+        return None
+    return (
+        text[open_paren + 1 : close_paren],
+        text[open_brace + 1 : close_brace],
+    )
+
+
 def function_call_arguments(text: str, name: str) -> list[str]:
     arguments: list[str] = []
     pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
@@ -601,6 +637,37 @@ def function_call_arguments(text: str, name: str) -> list[str]:
             continue
         arguments.append(text[open_paren + 1 : close_paren])
     return arguments
+
+
+def direct_statement_call_positions(
+    text: str, pattern: re.Pattern[str]
+) -> list[int]:
+    positions: list[int] = []
+    for match in pattern.finditer(text):
+        depth = 0
+        boundary = -1
+        for index, character in enumerate(text[: match.start()]):
+            if character == "{":
+                depth += 1
+            elif character == "}":
+                depth -= 1
+                if depth == 0:
+                    boundary = index
+            elif character == ";" and depth == 0:
+                boundary = index
+        if depth != 0 or text[boundary + 1 : match.start()].strip():
+            continue
+        open_paren = match.end() - 1
+        try:
+            close_paren = matching_delimiter(text, open_paren, "(", ")")
+        except ValueError:
+            continue
+        semicolon = close_paren + 1
+        while semicolon < len(text) and text[semicolon].isspace():
+            semicolon += 1
+        if semicolon < len(text) and text[semicolon] == ";":
+            positions.append(match.start())
+    return positions
 
 
 def split_top_level_arguments(arguments: str) -> list[str] | None:
@@ -682,16 +749,14 @@ def hook_guards_fallback(
     hook_call: re.Pattern[str],
     fallback_call: re.Pattern[str],
 ) -> bool:
-    guarded_bodies = [
-        block
-        for condition, block in find_if_blocks(outer_block)
-        if hook_false_condition(condition, hook_call)
-    ]
-    all_fallbacks = len(fallback_call.findall(outer_block))
-    guarded_fallbacks = sum(
-        len(fallback_call.findall(block)) for block in guarded_bodies
+    guard = sole_if_block(outer_block)
+    if guard is None:
+        return False
+    condition, guarded_body = guard
+    return (
+        hook_false_condition(condition, hook_call)
+        and len(fallback_call.findall(guarded_body)) == 1
     )
-    return all_fallbacks == 1 and guarded_fallbacks == 1
 
 
 def verify_usart(check: Verification) -> None:
@@ -772,7 +837,7 @@ def verify_nvic(check: Verification) -> None:
     text = check.read_text(NVIC_PATH)
     if text is None:
         return
-    bodies = function_bodies(strip_comments(text), "NVIC_Initialize")
+    bodies = function_bodies(c_code_only(text), "NVIC_Initialize")
     if len(bodies) != 1:
         check.fail(
             NVIC_PATH,
@@ -827,20 +892,22 @@ def verify_initialization_order(check: Verification) -> None:
         )
         return
     body = bodies[0]
-    pio_calls = list(re.finditer(r"\bPIO_Initialize\s*\(\s*\)\s*;", body))
-    if len(pio_calls) != 1:
+    pio_pattern = re.compile(r"\bPIO_Initialize\s*\(")
+    pio_calls = list(pio_pattern.finditer(body))
+    direct_pio_calls = direct_statement_call_positions(body, pio_pattern)
+    if len(pio_calls) != 1 or len(direct_pio_calls) != 1:
         check.fail(
             INIT_PATH,
-            "SYS_Initialize must call PIO_Initialize exactly once",
-            f"found={len(pio_calls)}",
+            "SYS_Initialize must call PIO_Initialize exactly once as an unconditional top-level statement",
+            f"found={len(pio_calls)}, top_level={len(direct_pio_calls)}",
         )
         return
     task_creation = TASK_START_PATTERN.search(body)
-    if task_creation is not None and task_creation.start() < pio_calls[0].start():
+    if task_creation is not None and task_creation.start() < direct_pio_calls[0]:
         check.fail(
             INIT_PATH,
             "PIO_Initialize must run before task creation or scheduler startup",
-            f"task API appears at offset {task_creation.start()}, PIO call at {pio_calls[0].start()}",
+            f"task API appears at offset {task_creation.start()}, PIO call at {direct_pio_calls[0]}",
         )
 
     main_text = check.read_text(MAIN_PATH)
@@ -855,19 +922,23 @@ def verify_initialization_order(check: Verification) -> None:
         )
         return
     main_body = main_bodies[0]
-    system_initialization = list(re.finditer(r"\bSYS_Initialize\s*\(", main_body))
-    if len(system_initialization) != 1:
+    system_pattern = re.compile(r"\bSYS_Initialize\s*\(")
+    system_initialization = list(system_pattern.finditer(main_body))
+    direct_system_initialization = direct_statement_call_positions(
+        main_body, system_pattern
+    )
+    if len(system_initialization) != 1 or len(direct_system_initialization) != 1:
         check.fail(
             MAIN_PATH,
-            "main must call SYS_Initialize exactly once",
-            f"found={len(system_initialization)}",
+            "main must call SYS_Initialize exactly once as an unconditional top-level statement",
+            f"found={len(system_initialization)}, top_level={len(direct_system_initialization)}",
         )
         return
     early_task = next(
         (
             match
             for match in TASK_START_PATTERN.finditer(main_body)
-            if match.start() < system_initialization[0].start()
+            if match.start() < direct_system_initialization[0]
         ),
         None,
     )
@@ -876,7 +947,7 @@ def verify_initialization_order(check: Verification) -> None:
             MAIN_PATH,
             "SYS_Initialize must run before task creation or scheduler startup",
             "task API appears at offset "
-            f"{early_task.start()}, SYS_Initialize call at {system_initialization[0].start()}",
+            f"{early_task.start()}, SYS_Initialize call at {direct_system_initialization[0]}",
         )
 
 
