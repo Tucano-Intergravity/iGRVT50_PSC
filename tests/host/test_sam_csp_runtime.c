@@ -1,4 +1,5 @@
 #include "support/test.h"
+#include "fakes/freertos/fake_freertos.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -282,6 +283,7 @@ static const sam_csp_runtime_ops_t fake_runtime_ops = {
 
 static void reset_runtime_fakes(runtime_fail_stage_t fail_stage)
 {
+    fake_freertos_reset();
     memset(&runtime_observed, 0, sizeof(runtime_observed));
     memset(&fake_router_task, 0, sizeof(fake_router_task));
     memset(&fake_service_task, 0, sizeof(fake_service_task));
@@ -364,16 +366,17 @@ static void runtime_failure_codes_are_stable_and_cleanup_is_stage_aware(void)
         runtime_fail_stage_t stage;
         int expected_code;
         uint8_t link_was_established;
+        uint8_t router_was_created;
     } cases[] = {
-        {FAIL_CSP_INIT, SAM_CSP_RUNTIME_ERR_CSP_INIT, 0U},
-        {FAIL_LINK_INIT, SAM_CSP_RUNTIME_ERR_LINK_INIT, 0U},
-        {FAIL_INTERFACE, SAM_CSP_RUNTIME_ERR_INTERFACE, 1U},
-        {FAIL_ROUTE, SAM_CSP_RUNTIME_ERR_ROUTE, 1U},
-        {FAIL_ROUTER_TASK, SAM_CSP_RUNTIME_ERR_ROUTER_TASK, 1U},
-        {FAIL_SERVICE_SOCKET, SAM_CSP_RUNTIME_ERR_SERVICE_SOCKET, 1U},
-        {FAIL_SERVICE_BIND, SAM_CSP_RUNTIME_ERR_SERVICE_BIND, 1U},
-        {FAIL_SERVICE_LISTEN, SAM_CSP_RUNTIME_ERR_SERVICE_LISTEN, 1U},
-        {FAIL_SERVICE_TASK, SAM_CSP_RUNTIME_ERR_SERVICE_TASK, 1U},
+        {FAIL_CSP_INIT, SAM_CSP_RUNTIME_ERR_CSP_INIT, 0U, 0U},
+        {FAIL_LINK_INIT, SAM_CSP_RUNTIME_ERR_LINK_INIT, 0U, 0U},
+        {FAIL_INTERFACE, SAM_CSP_RUNTIME_ERR_INTERFACE, 1U, 0U},
+        {FAIL_ROUTE, SAM_CSP_RUNTIME_ERR_ROUTE, 1U, 0U},
+        {FAIL_ROUTER_TASK, SAM_CSP_RUNTIME_ERR_ROUTER_TASK, 1U, 0U},
+        {FAIL_SERVICE_SOCKET, SAM_CSP_RUNTIME_ERR_SERVICE_SOCKET, 1U, 1U},
+        {FAIL_SERVICE_BIND, SAM_CSP_RUNTIME_ERR_SERVICE_BIND, 1U, 1U},
+        {FAIL_SERVICE_LISTEN, SAM_CSP_RUNTIME_ERR_SERVICE_LISTEN, 1U, 1U},
+        {FAIL_SERVICE_TASK, SAM_CSP_RUNTIME_ERR_SERVICE_TASK, 1U, 1U},
     };
 
     for (size_t index = 0U; index < (sizeof(cases) / sizeof(cases[0])); ++index) {
@@ -393,6 +396,15 @@ static void runtime_failure_codes_are_stable_and_cleanup_is_stage_aware(void)
         TEST_ASSERT_EQ_SIZE(
             (size_t) cases[index].expected_code,
             (size_t) runtime_observed.reported_failure);
+        fake_freertos_observations_t freertos_observed;
+        fake_freertos_get_observations(&freertos_observed);
+        TEST_ASSERT_EQ_SIZE(
+            cases[index].router_was_created,
+            freertos_observed.non_null_delete_calls);
+        sam_csp_runtime_status_t status;
+        SamCspRuntime_GetStatus(&status);
+        TEST_ASSERT_TRUE(status.router_task == NULL);
+        TEST_ASSERT_TRUE(status.service_task == NULL);
     }
 }
 
