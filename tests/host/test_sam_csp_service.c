@@ -122,7 +122,7 @@ static void assert_status_response(
     uint8_t expected_status,
     uint8_t expected_detail)
 {
-    uint8_t response[SAM_CSP_SNAPSHOT_RESPONSE_LENGTH];
+    uint8_t response[SAM_CSP_RESPONSE_HEADER_LENGTH + 2U];
     size_t response_length = 0xBEEFU;
 
     memset(response, 0xA5, sizeof(response));
@@ -134,7 +134,7 @@ static void assert_status_response(
             request,
             request_length,
             response,
-            sizeof(response),
+            SAM_CSP_RESPONSE_HEADER_LENGTH,
             &response_length));
     TEST_ASSERT_EQ_SIZE(SAM_CSP_RESPONSE_HEADER_LENGTH, response_length);
     TEST_ASSERT_EQ_SIZE(SAM_CSP_PROTOCOL_VERSION, response[0]);
@@ -143,6 +143,8 @@ static void assert_status_response(
     TEST_ASSERT_EQ_SIZE(request[3], response[3]);
     TEST_ASSERT_EQ_SIZE(expected_status, response[4]);
     TEST_ASSERT_EQ_SIZE(expected_detail, response[5]);
+    TEST_ASSERT_EQ_SIZE(0xA5U, response[6]);
+    TEST_ASSERT_EQ_SIZE(0xA5U, response[7]);
 }
 
 static void command_set_outputs_maps_domain_results_and_details(void)
@@ -234,6 +236,50 @@ static void command_set_mode_maps_domain_results_and_details(void)
         sizeof(valid_set_mode),
         SAM_CSP_STATUS_INTERNAL_ERROR,
         255U);
+}
+
+static void command_set_mode_rejects_out_of_range_without_domain_calls(void)
+{
+    static const struct {
+        uint8_t request[SAM_CSP_SET_MODE_REQUEST_LENGTH];
+        uint8_t expected[SAM_CSP_RESPONSE_HEADER_LENGTH];
+    } cases[] = {
+        {
+            {0x01U, 0x02U, 0xA1U, 0xB2U, 0x04U},
+            {0x01U, 0x02U, 0xA1U, 0xB2U, 0x04U, 0x04U},
+        },
+        {
+            {0x01U, 0x02U, 0xC3U, 0xD4U, 0xFFU},
+            {0x01U, 0x02U, 0xC3U, 0xD4U, 0x04U, 0x04U},
+        },
+    };
+
+    for (size_t index = 0U; index < (sizeof(cases) / sizeof(cases[0])); ++index) {
+        uint8_t response[SAM_CSP_RESPONSE_HEADER_LENGTH + 2U];
+        size_t response_length = 0xBEEFU;
+        fake_domain_observations_t observed;
+
+        reset_dispatch_fakes();
+        memset(response, 0xA5, sizeof(response));
+        TEST_ASSERT_EQ_SIZE(
+            SAM_CSP_DISPATCH_RESPOND,
+            sam_csp_service_dispatch(
+                SAM_CSP_PEER_ADDRESS,
+                SAM_CSP_COMMAND_PORT,
+                cases[index].request,
+                sizeof(cases[index].request),
+                response,
+                SAM_CSP_RESPONSE_HEADER_LENGTH,
+                &response_length));
+        TEST_ASSERT_EQ_SIZE(SAM_CSP_RESPONSE_HEADER_LENGTH, response_length);
+        TEST_ASSERT_TRUE(
+            memcmp(cases[index].expected, response, response_length) == 0);
+        TEST_ASSERT_EQ_SIZE(0xA5U, response[6]);
+        TEST_ASSERT_EQ_SIZE(0xA5U, response[7]);
+        fake_domain_get_observations(&observed);
+        TEST_ASSERT_EQ_SIZE(0U, observed.request_mode_calls);
+        TEST_ASSERT_EQ_SIZE(0U, observed.get_current_mode_calls);
+    }
 }
 
 static void command_port_reports_exact_bad_header_details(void)
@@ -536,6 +582,49 @@ static void rejected_inputs_leave_output_and_domain_untouched(void)
     TEST_ASSERT_EQ_SIZE(0U, observed.get_snapshot_calls);
     TEST_ASSERT_EQ_SIZE(0U, observed.tick_count_calls);
     TEST_ASSERT_EQ_SIZE(0U, observed.link_health_calls);
+}
+
+static void bad_telemetry_and_diagnostic_headers_need_only_six_bytes(void)
+{
+    static const struct {
+        uint8_t port;
+        uint8_t request[5];
+        size_t request_length;
+    } cases[] = {
+        {SAM_CSP_TELEMETRY_PORT, {0x02U, 0x01U, 0x10U, 0x01U, 0U}, 4U},
+        {SAM_CSP_TELEMETRY_PORT, {0x01U, 0x7FU, 0x10U, 0x02U, 0U}, 4U},
+        {SAM_CSP_TELEMETRY_PORT, {0x01U, 0x01U, 0x10U, 0x03U, 0U}, 5U},
+        {SAM_CSP_DIAGNOSTIC_PORT, {0x02U, 0x01U, 0x20U, 0x01U, 0U}, 4U},
+        {SAM_CSP_DIAGNOSTIC_PORT, {0x01U, 0x7FU, 0x20U, 0x02U, 0U}, 4U},
+        {SAM_CSP_DIAGNOSTIC_PORT, {0x01U, 0x01U, 0x20U, 0x03U, 0U}, 5U},
+    };
+
+    for (size_t index = 0U; index < (sizeof(cases) / sizeof(cases[0])); ++index) {
+        uint8_t response[SAM_CSP_RESPONSE_HEADER_LENGTH + 2U];
+        uint8_t expected[SAM_CSP_RESPONSE_HEADER_LENGTH + 2U];
+        size_t response_length = 0xCAFEU;
+        fake_domain_observations_t observed;
+
+        reset_dispatch_fakes();
+        memset(response, 0xA5, sizeof(response));
+        memset(expected, 0xA5, sizeof(expected));
+        TEST_ASSERT_EQ_SIZE(
+            SAM_CSP_DISPATCH_DROP,
+            sam_csp_service_dispatch(
+                SAM_CSP_PEER_ADDRESS,
+                cases[index].port,
+                cases[index].request,
+                cases[index].request_length,
+                response,
+                SAM_CSP_RESPONSE_HEADER_LENGTH - 1U,
+                &response_length));
+        TEST_ASSERT_EQ_SIZE(0xCAFEU, response_length);
+        TEST_ASSERT_TRUE(memcmp(expected, response, sizeof(response)) == 0);
+        fake_domain_get_observations(&observed);
+        TEST_ASSERT_EQ_SIZE(0U, observed.get_snapshot_calls);
+        TEST_ASSERT_EQ_SIZE(0U, observed.tick_count_calls);
+        TEST_ASSERT_EQ_SIZE(0U, observed.link_health_calls);
+    }
 }
 
 static void ping_delegates_but_reserved_and_unknown_ports_drop(void)
@@ -951,12 +1040,14 @@ static void null_read_closes_connection_without_touching_buffers(void)
 const test_case_t sam_csp_service_tests[] = {
     {"sam_csp_service", "SET_OUTPUTS maps domain results and details", command_set_outputs_maps_domain_results_and_details},
     {"sam_csp_service", "SET_MODE maps domain results and details", command_set_mode_maps_domain_results_and_details},
+    {"sam_csp_service", "SET_MODE rejects out-of-range values before domain", command_set_mode_rejects_out_of_range_without_domain_calls},
     {"sam_csp_service", "command BAD responses have exact details", command_port_reports_exact_bad_header_details},
     {"sam_csp_service", "snapshot maps success and failure", telemetry_snapshot_maps_success_and_failure},
     {"sam_csp_service", "telemetry BAD responses have exact details", telemetry_port_reports_exact_bad_header_details},
     {"sam_csp_service", "health uses wide uptime and counter order", diagnostic_health_encodes_wide_uptime_and_counter_order},
     {"sam_csp_service", "diagnostic BAD responses have exact details", diagnostic_port_reports_exact_bad_header_details},
     {"sam_csp_service", "rejected inputs preserve caller output", rejected_inputs_leave_output_and_domain_untouched},
+    {"sam_csp_service", "BAD telemetry and diagnostic headers need six bytes", bad_telemetry_and_diagnostic_headers_need_only_six_bytes},
     {"sam_csp_service", "only PING delegates among non-application ports", ping_delegates_but_reserved_and_unknown_ports_drop},
     {"sam_csp_service", "null output arguments do not call domain", null_output_arguments_fail_without_domain_calls},
     {"sam_csp_service", "prepare binds one ANY socket with backlog ten", service_prepare_uses_socket_any_and_exact_backlog},
