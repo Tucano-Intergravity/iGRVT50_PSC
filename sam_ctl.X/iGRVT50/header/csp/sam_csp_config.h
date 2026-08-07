@@ -33,6 +33,7 @@ _Static_assert(SAM_CSP_DIAGNOSTIC_PORT == 12U,
     "CSP max bind must cover diagnostics");
 _Static_assert(SAM_CSP_MAX_BIND_PORT == SAM_CSP_DIAGNOSTIC_PORT,
     "CSP max bind must cover diagnostics");
+#ifndef CSP_RS485_HOST_TEST
 _Static_assert(ATOMIC_BOOL_LOCK_FREE == 2,
     "CSP ISR atomics must be lock-free");
 _Static_assert(ATOMIC_INT_LOCK_FREE == 2,
@@ -41,5 +42,6 @@ _Static_assert(ATOMIC_LONG_LOCK_FREE == 2,
     "CSP long atomics must be lock-free");
 _Static_assert(sizeof(uint_fast32_t) == 4U,
     "CSP health atomics require 32-bit uint_fast32_t");
+#endif
 
 #endif
