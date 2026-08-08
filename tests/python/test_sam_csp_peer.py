@@ -1,11 +1,16 @@
 import builtins
-from contextlib import redirect_stderr
+import copy
+from contextlib import redirect_stderr, redirect_stdout
 import io
 import json
 from pathlib import Path
 import re
 import struct
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest import mock
+import weakref
 
 from tools import sam_csp_peer as peer
 
@@ -44,18 +49,30 @@ def c_integer_assignment(path, name):
 
 
 class FakeSerial:
-    def __init__(self, received=b""):
+    def __init__(self, received=b"", events=None):
         self.received = bytearray(received)
         self.writes = []
         self.flush_calls = 0
+        self.baudrate = peer.DEFAULT_BAUD
+        self.events = events
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception, traceback):
+        return False
 
     def write(self, data):
         copied = bytes(data)
         self.writes.append(copied)
+        if self.events is not None:
+            self.events.append("write")
         return len(copied)
 
     def flush(self):
         self.flush_calls += 1
+        if self.events is not None:
+            self.events.append("flush")
 
     def read(self, size=1):
         if not self.received:
@@ -165,8 +182,90 @@ class GoldenVectorTests(unittest.TestCase):
 
     def test_crc_corruption_is_rejected(self):
         vector = vector_by_name(self.document, "errors", "crc_corruption")
+        application = bytes.fromhex(vector["application_payload_hex"])
+        header = bytes.fromhex(vector["csp_header_hex"])
+        expected_crc = struct.pack(">I", peer.crc32c(application))
+        corrupt_crc = bytes.fromhex(vector["crc32c_hex"])
+        raw = bytes.fromhex(vector["raw_frame_hex"])
+        kiss = bytes.fromhex(vector["kiss_frame_hex"])
+        self.assertEqual(vector["expected_error"], "crc32c")
+        self.assertEqual(expected_crc.hex(), vector["expected_crc32c_hex"])
+        self.assertNotEqual(corrupt_crc, expected_crc)
+        self.assertEqual(raw, header + application + corrupt_crc)
+        self.assertEqual(kiss, peer.kiss_encode(raw))
         with self.assertRaises(peer.CrcError):
-            peer.decode_raw_frame(bytes.fromhex(vector["raw_frame_hex"]))
+            peer.decode_raw_frame(peer.kiss_decode(kiss))
+
+    def test_selftest_rejects_any_inconsistent_crc_error_metadata(self):
+        mutations = {
+            "based_on": "get_snapshot_request",
+            "application_payload_hex": "00014567",
+            "csp_header_hex": "84130c00",
+            "expected_crc32c_hex": "00000000",
+            "crc32c_hex": "00000000",
+            "raw_frame_hex": "84130c00010145672750bb26",
+            "kiss_frame_hex": "c00084130c00010145672750bb26c0",
+            "expected_error": "not-crc32c",
+        }
+        for field, changed_value in mutations.items():
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as directory:
+                document = copy.deepcopy(self.document)
+                document["errors"][0][field] = changed_value
+                path = Path(directory) / "vectors.json"
+                path.write_text(json.dumps(document), encoding="utf-8")
+                with self.assertRaises(peer.ProtocolError):
+                    peer.run_selftest(path, output=io.StringIO())
+
+    def test_selftest_rejects_coherent_non_four_byte_corrupt_crc_metadata(self):
+        document = copy.deepcopy(self.document)
+        vector = document["errors"][0]
+        vector["crc32c_hex"] = "002750bb26"
+        vector["raw_frame_hex"] = "84130d0001014567002750bb26"
+        vector["kiss_frame_hex"] = "c00084130d0001014567002750bb26c0"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "vectors.json"
+            path.write_text(json.dumps(document), encoding="utf-8")
+            with self.assertRaises(peer.ProtocolError):
+                peer.run_selftest(path, output=io.StringIO())
+
+
+class FrameBoundTests(unittest.TestCase):
+    def test_frame_limits_match_committed_rs485_profile(self):
+        profile = REPOSITORY_ROOT / "third_party" / "csp-rs485" / "include" / "csp_rs485_profile.h"
+        buffer_data_size = c_define(profile, "CSP_RS485_CSP_BUFFER_DATA_SIZE")
+        crc_size = c_define(profile, "CSP_RS485_CSP_CRC_SIZE")
+        header_size = c_define(profile, "CSP_RS485_CSP_HEADER_SIZE")
+        self.assertEqual(peer.MAX_APPLICATION_PAYLOAD, buffer_data_size - crc_size)
+        self.assertEqual(peer.MAX_RAW_FRAME_SIZE, header_size + buffer_data_size)
+        self.assertEqual(peer.MAX_KISS_FRAME_SIZE, 3 + (2 * peer.MAX_RAW_FRAME_SIZE))
+
+    def test_encode_accepts_exact_maximum_and_rejects_overlength(self):
+        header = peer.encode_csp_header(2, 2, 1, 10, 13, 0)
+        self.assertEqual(
+            len(peer.build_raw_frame(header, bytes(peer.MAX_APPLICATION_PAYLOAD))),
+            peer.MAX_RAW_FRAME_SIZE,
+        )
+        maximum_kiss = peer.kiss_encode(bytes((peer.KISS_FEND,)) * peer.MAX_RAW_FRAME_SIZE)
+        self.assertEqual(len(maximum_kiss), peer.MAX_KISS_FRAME_SIZE)
+        with self.assertRaises(ValueError):
+            peer.build_raw_frame(header, bytes(peer.MAX_APPLICATION_PAYLOAD + 1))
+        with self.assertRaises(ValueError):
+            peer.kiss_encode(bytes(peer.MAX_RAW_FRAME_SIZE + 1))
+
+    def test_decode_rejects_overlength_raw_and_kiss_frames(self):
+        header = peer.encode_csp_header(2, 2, 1, 10, 13, 0)
+        overlength_raw = header + bytes(peer.MAX_APPLICATION_PAYLOAD + 1 + 4)
+        with self.assertRaisesRegex(peer.ProtocolError, "maximum"):
+            peer.decode_raw_frame(overlength_raw)
+        overlength_kiss = bytes((peer.KISS_FEND, peer.KISS_DATA_COMMAND)) + bytes(609) + bytes((peer.KISS_FEND,))
+        self.assertEqual(len(overlength_kiss), peer.MAX_KISS_FRAME_SIZE + 1)
+        with self.assertRaisesRegex(peer.ProtocolError, "maximum"):
+            peer.kiss_decode(overlength_kiss)
+
+    def test_receive_rejects_overlength_before_timeout(self):
+        overlength_unterminated = bytes((peer.KISS_FEND, peer.KISS_DATA_COMMAND)) + bytes(610)
+        with self.assertRaisesRegex(peer.ProtocolError, "maximum"):
+            peer.read_kiss_frame(FakeSerial(overlength_unterminated), timeout_seconds=0.01)
 
 
 class ApplicationCodecTests(unittest.TestCase):
@@ -290,6 +389,147 @@ class TransactionTests(unittest.TestCase):
             )
         self.assertEqual(len(serial_port.writes), 1)
         self.assertEqual(serial_port.flush_calls, 1)
+
+
+class _FakeIds:
+    def __init__(self):
+        self.value = 0
+
+    def take(self):
+        result = self.value
+        self.value = (self.value + 1) & 0xFFFF
+        return result
+
+
+class _RetainedRecord(dict):
+    __slots__ = ("__weakref__",)
+
+
+class _FakeClock:
+    def __init__(self, events):
+        self.now = 0.0
+        self.events = events
+
+    def monotonic(self):
+        self.events.append("monotonic")
+        return self.now
+
+    def sleep(self, seconds):
+        self.events.append("sleep")
+        self.now += seconds
+
+    def advance(self, seconds):
+        self.now += seconds
+
+
+class CommandBodyTests(unittest.TestCase):
+    def test_large_traffic_run_retains_only_first_and_last_records(self):
+        live_refs = []
+        maximum_live = 0
+        sequence = 0
+
+        def synthetic_snapshot(serial_port, transaction_id, timeout_seconds):
+            nonlocal maximum_live, sequence
+            del serial_port, transaction_id, timeout_seconds
+            live_refs[:] = [reference for reference in live_refs if reference() is not None]
+            maximum_live = max(maximum_live, len(live_refs))
+            if len(live_refs) > 2:
+                raise AssertionError("traffic command retained more than first/last records")
+            sequence += 1
+            record = _RetainedRecord(latency_ms=0.25, sequence=sequence)
+            live_refs.append(weakref.ref(record))
+            return record, None
+
+        args = SimpleNamespace(
+            device="COM_TEST",
+            baud=peer.DEFAULT_BAUD,
+            timeout_seconds=0.1,
+            interval_ms=0.0,
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(peer, "_open_serial", return_value=FakeSerial()),
+            mock.patch.object(peer, "_snapshot_transaction", side_effect=synthetic_snapshot),
+            redirect_stdout(output),
+        ):
+            result = peer._run_traffic(args, _FakeIds(), count=5000)
+
+        summary = json.loads(output.getvalue())
+        self.assertEqual(result, 0)
+        self.assertLessEqual(maximum_live, 2)
+        self.assertEqual(summary["attempted"], 5000)
+        self.assertEqual(summary["first_transaction"]["sequence"], 1)
+        self.assertEqual(summary["last_transaction"]["sequence"], 5000)
+
+    @staticmethod
+    def _health_response(transaction_id, counters):
+        return peer.HealthResponse(
+            version=1,
+            opcode=1,
+            transaction_id=transaction_id,
+            status=0,
+            detail=0,
+            uptime_ms=0,
+            link_state=1,
+            last_error=0,
+            counters=tuple(counters),
+        )
+
+    def _run_synthetic_recovery(self, settle_seconds, post_reply_seconds):
+        events = []
+        clock = _FakeClock(events)
+        serial_port = FakeSerial(events=events)
+        calls = 0
+
+        def synthetic_health(port, transaction_id, timeout_seconds):
+            nonlocal calls
+            del port, timeout_seconds
+            calls += 1
+            counters = [0] * 11
+            if calls == 2:
+                counters[0] = 1
+                counters[8] = 1
+                counters[9] = 1
+                clock.advance(post_reply_seconds)
+            response = self._health_response(transaction_id, counters)
+            return {"latency_ms": post_reply_seconds * 1000.0}, response
+
+        args = SimpleNamespace(
+            device="COM_TEST",
+            baud=peer.DEFAULT_BAUD,
+            timeout_seconds=1.0,
+            iterations=1,
+            fault_baud=115200,
+            fault_bytes=64,
+            settle_seconds=settle_seconds,
+        )
+        output = io.StringIO()
+        with (
+            mock.patch.object(peer, "_open_serial", return_value=serial_port),
+            mock.patch.object(peer, "_health_transaction", side_effect=synthetic_health),
+            mock.patch.object(peer.time, "monotonic", side_effect=clock.monotonic),
+            mock.patch.object(peer.time, "sleep", side_effect=clock.sleep),
+            redirect_stdout(output),
+        ):
+            result = peer._run_recovery(args, _FakeIds())
+        return result, json.loads(output.getvalue()), events
+
+    def test_recovery_250ms_gate_includes_configured_settle_interval(self):
+        result, summary, events = self._run_synthetic_recovery(0.250, 0.001)
+        trial = summary["trials"][0]
+        self.assertEqual(events[:3], ["write", "flush", "monotonic"])
+        self.assertEqual(result, 1)
+        self.assertEqual(trial["outcome"], "fail")
+        self.assertEqual(trial["post_fault_elapsed_ms"], 251.0)
+        self.assertEqual(trial["post_request_latency_ms"], 1.0)
+
+    def test_recovery_passes_when_settle_plus_first_reply_is_within_250ms(self):
+        result, summary, _ = self._run_synthetic_recovery(0.200, 0.040)
+        trial = summary["trials"][0]
+        self.assertEqual(result, 0)
+        self.assertEqual(trial["outcome"], "pass")
+        self.assertEqual(trial["post_fault_elapsed_ms"], 240.0)
+        self.assertEqual(trial["post_request_latency_ms"], 40.0)
 
 
 class CliContractTests(unittest.TestCase):

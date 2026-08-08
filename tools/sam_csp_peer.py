@@ -46,6 +46,9 @@ KISS_DATA_COMMAND = 0x00
 DEFAULT_BAUD = 921600
 DEFAULT_TIMEOUT_SECONDS = 1.0
 MAX_APPLICATION_PAYLOAD = 296
+MAX_RAW_FRAME_SIZE = 304
+MAX_KISS_FRAME_SIZE = 611
+RECOVERY_ACCEPTANCE_MS = 250.0
 
 STATUS_NAMES = (
     "OK",
@@ -231,6 +234,8 @@ def build_raw_frame(csp_header: bytes, application_payload: bytes) -> bytes:
 
 
 def decode_raw_frame(raw_frame: bytes) -> tuple[CspHeader, bytes]:
+    if len(raw_frame) > MAX_RAW_FRAME_SIZE:
+        raise ProtocolError(f"raw CSP frame exceeds maximum {MAX_RAW_FRAME_SIZE} bytes")
     if len(raw_frame) < 8:
         raise ProtocolError("raw CSP frame is shorter than header plus CRC32C")
     header = decode_csp_header(raw_frame[:4])
@@ -245,6 +250,8 @@ def decode_raw_frame(raw_frame: bytes) -> tuple[CspHeader, bytes]:
 
 
 def kiss_encode(raw_frame: bytes) -> bytes:
+    if len(raw_frame) > MAX_RAW_FRAME_SIZE:
+        raise ValueError(f"raw CSP frame exceeds maximum {MAX_RAW_FRAME_SIZE} bytes")
     encoded = bytearray((KISS_FEND, KISS_DATA_COMMAND))
     for byte in raw_frame:
         if byte == KISS_FEND:
@@ -258,6 +265,8 @@ def kiss_encode(raw_frame: bytes) -> bytes:
 
 
 def kiss_decode(kiss_frame: bytes) -> bytes:
+    if len(kiss_frame) > MAX_KISS_FRAME_SIZE:
+        raise ProtocolError(f"KISS frame exceeds maximum {MAX_KISS_FRAME_SIZE} bytes")
     if len(kiss_frame) < 3 or kiss_frame[0] != KISS_FEND or kiss_frame[-1] != KISS_FEND:
         raise ProtocolError("KISS frame requires FEND, data command, and trailing FEND")
 
@@ -450,8 +459,12 @@ def read_kiss_frame(serial_port, timeout_seconds: float) -> bytes:
             if byte == KISS_FEND:
                 if len(frame) == 1:
                     continue
+                if len(frame) >= MAX_KISS_FRAME_SIZE:
+                    raise ProtocolError(f"KISS frame exceeds maximum {MAX_KISS_FRAME_SIZE} bytes")
                 frame.append(byte)
                 return bytes(frame)
+            if len(frame) >= MAX_KISS_FRAME_SIZE:
+                raise ProtocolError(f"KISS frame exceeds maximum {MAX_KISS_FRAME_SIZE} bytes")
             frame.append(byte)
     raise PeerTimeoutError(f"no complete KISS frame within {timeout_seconds:.3f} seconds")
 
@@ -593,6 +606,49 @@ def _load_vector_document(path: Path) -> dict:
         return json.load(stream)
 
 
+def _validate_crc_error_vector(vector: dict, normal_vectors: dict[str, dict]) -> None:
+    name = vector.get("name", "unnamed-error-vector")
+    try:
+        based_on = vector["based_on"]
+        base_vector = normal_vectors[based_on]
+        application = bytes.fromhex(vector["application_payload_hex"])
+        header = bytes.fromhex(vector["csp_header_hex"])
+        expected_crc = bytes.fromhex(vector["expected_crc32c_hex"])
+        corrupt_crc = bytes.fromhex(vector["crc32c_hex"])
+        raw = bytes.fromhex(vector["raw_frame_hex"])
+        kiss = bytes.fromhex(vector["kiss_frame_hex"])
+        expected_error = vector["expected_error"]
+        base_application = bytes.fromhex(base_vector["application_payload_hex"])
+        base_header = bytes.fromhex(base_vector["csp_header_hex"])
+        base_crc = bytes.fromhex(base_vector["crc32c_hex"])
+    except (KeyError, TypeError, ValueError) as error:
+        raise ProtocolError(f"{name}: malformed CRC error metadata") from error
+
+    calculated_crc = struct.pack(">I", crc32c(application))
+    if application != base_application or header != base_header or expected_crc != base_crc:
+        raise ProtocolError(f"{name}: based_on metadata mismatch")
+    if expected_error != "crc32c":
+        raise ProtocolError(f"{name}: expected_error must be crc32c")
+    if len(header) != 4 or len(expected_crc) != 4 or len(corrupt_crc) != 4:
+        raise ProtocolError(f"{name}: CSP header and CRC fields must be four bytes")
+    if expected_crc != calculated_crc:
+        raise ProtocolError(f"{name}: expected CRC32C metadata mismatch")
+    if corrupt_crc == expected_crc:
+        raise ProtocolError(f"{name}: corrupt CRC32C equals the expected value")
+    if raw != header + application + corrupt_crc:
+        raise ProtocolError(f"{name}: corrupt raw frame metadata mismatch")
+    if kiss != kiss_encode(raw):
+        raise ProtocolError(f"{name}: corrupt KISS frame metadata mismatch")
+    decoded_raw = kiss_decode(kiss)
+    if decoded_raw != raw:
+        raise ProtocolError(f"{name}: corrupt KISS frame did not round-trip")
+    try:
+        decode_raw_frame(decoded_raw)
+    except CrcError:
+        return
+    raise ProtocolError(f"{name}: corrupt CRC was accepted")
+
+
 def run_selftest(path: Path | None = None, output: TextIO = sys.stdout) -> None:
     document = _load_vector_document(path or _default_vector_path())
     expected_constants = {
@@ -643,13 +699,9 @@ def run_selftest(path: Path | None = None, output: TextIO = sys.stdout) -> None:
             if decoded_header.flags != 0 or decoded_application != application:
                 raise ProtocolError(f"{vector['name']}: round-trip mismatch")
 
+    normal_vectors = {vector["name"]: vector for vector in document["normal"]}
     for vector in document["errors"]:
-        try:
-            decode_raw_frame(bytes.fromhex(vector["raw_frame_hex"]))
-        except CrcError:
-            pass
-        else:
-            raise ProtocolError(f"{vector['name']}: corrupt CRC was accepted")
+        _validate_crc_error_vector(vector, normal_vectors)
 
     snapshot_vector = next(vector for vector in document["normal"] if vector["name"] == "snapshot_signed_response")
     decode_snapshot_response(bytes.fromhex(snapshot_vector["application_payload_hex"]), 0xBEEF)
@@ -776,7 +828,8 @@ def _run_traffic(args, ids: _TransactionIds, count: int | None) -> int:
         "malformed_responses": 0,
         "maximum_latency_ms": 0.0,
     }
-    records = []
+    first_transaction = None
+    last_transaction = None
     start = time.monotonic()
     with _open_serial(args.device, args.baud, args.timeout_seconds) as serial_port:
         while count is None or summary["attempted"] < count:
@@ -790,14 +843,16 @@ def _run_traffic(args, ids: _TransactionIds, count: int | None) -> int:
                     record, _ = _health_transaction(serial_port, ids.take(), args.timeout_seconds)
                 summary["completed"] += 1
                 summary["maximum_latency_ms"] = max(summary["maximum_latency_ms"], record["latency_ms"])
-                records.append(record)
+                if first_transaction is None:
+                    first_transaction = record
+                last_transaction = record
             except (PeerError, ValueError) as error:
                 summary[_classify_error(error)] += 1
             if args.interval_ms > 0:
                 time.sleep(args.interval_ms / 1000.0)
     summary["elapsed_seconds"] = round(time.monotonic() - start, 3)
-    summary["first_transaction"] = records[0] if records else None
-    summary["last_transaction"] = records[-1] if records else None
+    summary["first_transaction"] = first_transaction
+    summary["last_transaction"] = last_transaction
     _print_json(summary)
     errors = summary["attempted"] - summary["completed"]
     return 0 if errors == 0 else 1
@@ -823,11 +878,13 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
             if written != len(fault_data):
                 raise PeerError(f"fault write accepted {written} of {len(fault_data)} bytes")
             serial_port.flush()
+            recovery_epoch = time.monotonic()
             time.sleep(args.settle_seconds)
             serial_port.baudrate = args.baud
 
             try:
                 after_record, after = _health_transaction(serial_port, ids.take(), args.timeout_seconds)
+                post_fault_elapsed_ms = round((time.monotonic() - recovery_epoch) * 1000.0, 3)
                 delta = _counter_delta(before, after)
                 conclusive = delta["uart_errors"] > 0
                 passed = (
@@ -835,7 +892,7 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
                     and delta["recovery_attempts"] > 0
                     and delta["recovery_successes"] > 0
                     and after.link_state == 1
-                    and after_record["latency_ms"] <= 250.0
+                    and post_fault_elapsed_ms <= RECOVERY_ACCEPTANCE_MS
                 )
                 if not conclusive:
                     outcome = "inconclusive"
@@ -850,7 +907,8 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
                         "iteration": iteration + 1,
                         "outcome": outcome,
                         "counter_delta": delta,
-                        "post_recovery_latency_ms": after_record["latency_ms"],
+                        "post_fault_elapsed_ms": post_fault_elapsed_ms,
+                        "post_request_latency_ms": after_record["latency_ms"],
                         "before_transaction": before_record,
                         "after_transaction": after_record,
                         "output_observation_required": True,
@@ -858,7 +916,14 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
                 )
             except PeerError as error:
                 failures += 1
-                trials.append({"iteration": iteration + 1, "outcome": "fail", "error": str(error)})
+                trials.append(
+                    {
+                        "iteration": iteration + 1,
+                        "outcome": "fail",
+                        "post_fault_elapsed_ms": round((time.monotonic() - recovery_epoch) * 1000.0, 3),
+                        "error": str(error),
+                    }
+                )
     _print_json(
         {
             "iterations": args.iterations,
