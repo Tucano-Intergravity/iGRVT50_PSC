@@ -732,7 +732,7 @@ Expected: zero lost/corrupt reply, no unexpected recovery, no stream drop, contr
 - [ ] Inject 100 UART error/recovery trials using the peer's fault-baud action and capture pre/post health each time.
 
 ```powershell
-& $samCspPython tools/sam_csp_peer.py recovery --device $env:SAM_CSP_SERIAL --iterations 100 --fault-baud 115200 --fault-bytes 64 --settle-seconds 0.25 --timeout-seconds 1.0
+& $samCspPython tools/sam_csp_peer.py recovery --device $env:SAM_CSP_SERIAL --iterations 100 --fault-baud 115200 --fault-bytes 64 --settle-seconds 0.20 --timeout-seconds 1.0
 ```
 
 Expected per conclusive trial: UART error and recovery attempt/success counters increase, final state is RUNNING, a new valid request succeeds within 250 ms, and outputs do not change. Trials that induce no observable UART error are recorded as inconclusive rather than pass.

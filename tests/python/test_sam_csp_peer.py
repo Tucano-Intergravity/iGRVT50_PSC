@@ -531,6 +531,14 @@ class CommandBodyTests(unittest.TestCase):
         self.assertEqual(trial["post_fault_elapsed_ms"], 240.0)
         self.assertEqual(trial["post_request_latency_ms"], 40.0)
 
+    def test_recovery_uses_unrounded_elapsed_for_250ms_boundary(self):
+        result, summary, _ = self._run_synthetic_recovery(0.249, 0.0010004)
+        trial = summary["trials"][0]
+        self.assertEqual(result, 1)
+        self.assertEqual(trial["outcome"], "fail")
+        self.assertEqual(trial["post_fault_elapsed_ms"], 250.0)
+        self.assertAlmostEqual(trial["post_request_latency_ms"], 1.0004)
+
 
 class CliContractTests(unittest.TestCase):
     def test_all_approved_commands_exist_and_online_commands_require_device(self):
@@ -565,6 +573,26 @@ class CliContractTests(unittest.TestCase):
     def test_only_pyserial_35_is_pinned(self):
         requirements = (REPOSITORY_ROOT / "tools" / "requirements-csp-peer.txt").read_text(encoding="utf-8")
         self.assertEqual(requirements.splitlines(), ["pyserial==3.5"])
+
+    def test_recovery_default_and_task12_command_leave_reply_headroom(self):
+        parser = peer.build_argument_parser()
+        parsed = parser.parse_args(["recovery", "--device", "COM_TEST"])
+        self.assertEqual(parsed.settle_seconds, 0.20)
+        self.assertLess(parsed.settle_seconds * 1000.0, peer.RECOVERY_ACCEPTANCE_MS)
+
+        plan = (
+            REPOSITORY_ROOT
+            / "docs"
+            / "superpowers"
+            / "plans"
+            / "2026-08-06-samv71-libcsp-rs485-porting.md"
+        ).read_text(encoding="utf-8")
+        configured = re.findall(
+            r"sam_csp_peer\.py recovery [^\r\n]*--settle-seconds ([0-9.]+)",
+            plan,
+        )
+        self.assertEqual(configured, ["0.20"])
+        self.assertLess(float(configured[0]) * 1000.0, peer.RECOVERY_ACCEPTANCE_MS)
 
 
 if __name__ == "__main__":

@@ -593,7 +593,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     recovery.add_argument("--iterations", type=_positive_integer, default=100)
     recovery.add_argument("--fault-baud", type=_positive_integer, default=115200)
     recovery.add_argument("--fault-bytes", type=_positive_integer, default=64)
-    recovery.add_argument("--settle-seconds", type=_nonnegative_float, default=0.25)
+    recovery.add_argument("--settle-seconds", type=_nonnegative_float, default=0.20)
     return parser
 
 
@@ -884,7 +884,8 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
 
             try:
                 after_record, after = _health_transaction(serial_port, ids.take(), args.timeout_seconds)
-                post_fault_elapsed_ms = round((time.monotonic() - recovery_epoch) * 1000.0, 3)
+                actual_post_fault_elapsed_ms = (time.monotonic() - recovery_epoch) * 1000.0
+                reported_post_fault_elapsed_ms = round(actual_post_fault_elapsed_ms, 3)
                 delta = _counter_delta(before, after)
                 conclusive = delta["uart_errors"] > 0
                 passed = (
@@ -892,7 +893,7 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
                     and delta["recovery_attempts"] > 0
                     and delta["recovery_successes"] > 0
                     and after.link_state == 1
-                    and post_fault_elapsed_ms <= RECOVERY_ACCEPTANCE_MS
+                    and actual_post_fault_elapsed_ms <= RECOVERY_ACCEPTANCE_MS
                 )
                 if not conclusive:
                     outcome = "inconclusive"
@@ -907,7 +908,7 @@ def _run_recovery(args, ids: _TransactionIds) -> int:
                         "iteration": iteration + 1,
                         "outcome": outcome,
                         "counter_delta": delta,
-                        "post_fault_elapsed_ms": post_fault_elapsed_ms,
+                        "post_fault_elapsed_ms": reported_post_fault_elapsed_ms,
                         "post_request_latency_ms": after_record["latency_ms"],
                         "before_transaction": before_record,
                         "after_transaction": after_record,
