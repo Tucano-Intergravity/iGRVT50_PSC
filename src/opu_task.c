@@ -104,6 +104,7 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define RSTASK_NOTIFY_TM_EVENT      (1UL << 1)
 #define RSTASK_NOTIFY_THRUSTER_DEBUG (1UL << 2)
 #define RSTASK_NOTIFY_PAR_DEBUG     (1UL << 3)
+#define RSTASK_NOTIFY_THRUSTER_EMERGENCY_DEBUG (1UL << 4)
 #define THRDBG_EVENT_HPV1_ON        0U
 #define THRDBG_EVENT_HPV2_ON        1U
 #define THRDBG_EVENT_SP_ON          2U
@@ -111,14 +112,22 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define THRDBG_EVENT_HPV1_OFF       4U
 #define THRDBG_EVENT_SP_OFF         5U
 #define THRDBG_EVENT_COUNT          6U
+#define THREMGDBG_EVENT_PRE_RUN_CHECK 0U
+#define THREMGDBG_EVENT_RUN_MONITOR   1U
+#define THREMGDBG_EVENT_COUNT         2U
 #define TC_TASK_PRIORITY            (tskIDLE_PRIORITY)
 #define ADC_TASK_PRIORITY           (tskIDLE_PRIORITY)
 #define RS_TASK_PRIORITY            (tskIDLE_PRIORITY + 3U)
 #define PAR_DEBUG_PERIOD_MS         1000UL
+#define THRUSTER_EMERGENCY_RUN_DEBUG_PERIOD_MS 1000UL
 
 static volatile UInt32 s_thrusterDebugEventMask = 0U;
 static volatile UInt32 s_thrusterDebugEventElapsedMs[THRDBG_EVENT_COUNT] = { 0U };
 static volatile eStateMachineMode s_thrusterDebugEventMode[THRDBG_EVENT_COUNT] = { STATE_MACHINE_INIT_MODE };
+static volatile UInt32 s_thrusterEmergencyDebugEventMask = 0U;
+static volatile UInt32 s_thrusterEmergencyDebugEventElapsedMs[THREMGDBG_EVENT_COUNT] = { 0U };
+static volatile eStateMachineMode s_thrusterEmergencyDebugEventMode[THREMGDBG_EVENT_COUNT] = { STATE_MACHINE_INIT_MODE };
+static volatile UInt32 s_thrusterEmergencyRunDebugAccumMs = 0U;
 static volatile UInt8 s_parRoutineActive = 0U;
 static volatile UInt32 s_parRoutineServiceCount = 0U;
 static volatile UInt32 s_parRoutineElapsedMs = 0U;
@@ -143,6 +152,7 @@ static void RsTask_SendSensorPacket( void );
 static void RsTask_SendAckPacket( void );
 static void RsTask_SendThrusterDebugEvents( void );
 static void RsTask_SendParDebugEvent( void );
+static void RsTask_SendThrusterEmergencyDebugEvents( void );
 static void RsTask_ProcessRx( void );
 static void RsTask_ProcessTelecommandLine( char *line );
 static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode );
@@ -152,6 +162,9 @@ static UInt8 RsTask_IsDiagnosticMode( void );
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
                                      const UInt8 *heaterState, UInt8 spState );
 static void ThrusterSequence_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs );
+static void ThrusterEmergency_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs );
+static UInt8 ThrusterEmergency_PreRunCheck( void );
+static UInt8 ThrusterEmergency_RunMonitor( void );
 static UInt8 ThrusterSequence_Start( UInt32 burnTimeMs );
 static void ThrusterSequence_Abort( void );
 static void ThrusterSequence_Service10ms( void );
@@ -418,6 +431,54 @@ static void RsTask_SendParDebugEvent( void )
     UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
 }
 
+static void RsTask_SendThrusterEmergencyDebugEvents( void )
+{
+    static const char * const eventName[THREMGDBG_EVENT_COUNT] =
+    {
+        "PreRunCheck", "RunMonitor"
+    };
+    UInt32 eventMask;
+    UInt32 eventElapsedMs[THREMGDBG_EVENT_COUNT];
+    eStateMachineMode eventMode[THREMGDBG_EVENT_COUNT];
+    UInt8 i;
+    char cTxMsg[96];
+    int iTxLen;
+
+    taskENTER_CRITICAL();
+    eventMask = s_thrusterEmergencyDebugEventMask;
+    s_thrusterEmergencyDebugEventMask = 0U;
+    for( i = 0U; i < THREMGDBG_EVENT_COUNT; i++ )
+    {
+        eventElapsedMs[i] = s_thrusterEmergencyDebugEventElapsedMs[i];
+        eventMode[i] = s_thrusterEmergencyDebugEventMode[i];
+    }
+    taskEXIT_CRITICAL();
+
+    for( i = 0U; i < THREMGDBG_EVENT_COUNT; i++ )
+    {
+        if( (eventMask & (1UL << i)) == 0U )
+        {
+            continue;
+        }
+
+        iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
+                           TCMD_PACKET_HEADER ",EMGDBG,%lu,%s,%s\r\n",
+                           (unsigned long)eventElapsedMs[i],
+                           eventName[i],
+                           StateMachine_GetModeName( eventMode[i] ) );
+        if( iTxLen < 0 )
+        {
+            continue;
+        }
+        if( iTxLen >= (int)sizeof(cTxMsg) )
+        {
+            iTxLen = (int)sizeof(cTxMsg) - 1;
+        }
+
+        UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
+    }
+}
+
 static UInt8 RsTask_ParseBinaryField( const char *text, UInt8 *value )
 {
     if( (text == NULL) || (value == NULL) )
@@ -612,6 +673,7 @@ static void ThrusterSequence_ClearState( void )
     s_thrusterSequence.hpv1CloseApplied = 0U;
     s_thrusterSequence.hpv2CloseApplied = 0U;
     s_thrusterSequence.sparkOffApplied = 0U;
+    s_thrusterEmergencyRunDebugAccumMs = 0U;
 }
 
 static void ThrusterSequence_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs )
@@ -631,6 +693,65 @@ static void ThrusterSequence_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs
     {
         (void)xTaskNotify( xRsTask, RSTASK_NOTIFY_THRUSTER_DEBUG, eSetBits );
     }
+}
+
+static void ThrusterEmergency_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs )
+{
+    if( eventIndex >= THREMGDBG_EVENT_COUNT )
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    s_thrusterEmergencyDebugEventElapsedMs[eventIndex] = elapsedMs;
+    s_thrusterEmergencyDebugEventMode[eventIndex] = StateMachine_GetMode();
+    s_thrusterEmergencyDebugEventMask |= (1UL << eventIndex);
+    taskEXIT_CRITICAL();
+
+    if( xRsTask != NULL )
+    {
+        (void)xTaskNotify( xRsTask, RSTASK_NOTIFY_THRUSTER_EMERGENCY_DEBUG, eSetBits );
+    }
+}
+
+static UInt8 ThrusterEmergency_PreRunCheck( void )
+{
+    ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_PRE_RUN_CHECK, 0U );
+    return 1U;
+}
+
+static UInt8 ThrusterEmergency_RunMonitor( void )
+{
+    UInt8 sendDebug = 0U;
+    UInt32 elapsedMs;
+
+    taskENTER_CRITICAL();
+    elapsedMs = s_thrusterSequence.elapsedMs;
+    if( s_thrusterEmergencyRunDebugAccumMs <=
+        (0xFFFFFFFFUL - OPU_TIMER_TICK_MS) )
+    {
+        s_thrusterEmergencyRunDebugAccumMs += OPU_TIMER_TICK_MS;
+    }
+    else
+    {
+        s_thrusterEmergencyRunDebugAccumMs = 0xFFFFFFFFUL;
+    }
+
+    if( s_thrusterEmergencyRunDebugAccumMs >=
+        THRUSTER_EMERGENCY_RUN_DEBUG_PERIOD_MS )
+    {
+        s_thrusterEmergencyRunDebugAccumMs = 0U;
+        sendDebug = 1U;
+    }
+    taskEXIT_CRITICAL();
+
+    if( sendDebug != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_RUN_MONITOR,
+                                           elapsedMs );
+    }
+
+    return 1U;
 }
 
 static void ThrusterSequence_ApplyDueActions( void )
@@ -720,6 +841,19 @@ static UInt8 ThrusterSequence_Start( UInt32 burnTimeMs )
         taskEXIT_CRITICAL();
         return 0U;
     }
+    taskEXIT_CRITICAL();
+
+    if( ThrusterEmergency_PreRunCheck() == 0U )
+    {
+        return 0U;
+    }
+
+    taskENTER_CRITICAL();
+    if( s_thrusterSequence.active != 0U )
+    {
+        taskEXIT_CRITICAL();
+        return 0U;
+    }
     if( StateMachine_RequestMode( STATE_MACHINE_RUN_MODE ) == 0U )
     {
         taskEXIT_CRITICAL();
@@ -735,6 +869,7 @@ static UInt8 ThrusterSequence_Start( UInt32 burnTimeMs )
     s_thrusterSequence.hpv1CloseApplied = 0U;
     s_thrusterSequence.hpv2CloseApplied = 0U;
     s_thrusterSequence.sparkOffApplied = 0U;
+    s_thrusterEmergencyRunDebugAccumMs = 0U;
     taskEXIT_CRITICAL();
 
     ThrusterSequence_ApplyDueActions();
@@ -760,6 +895,11 @@ static void ThrusterSequence_Service10ms( void )
     else
     {
         s_thrusterSequence.elapsedMs = 0xFFFFFFFFUL;
+    }
+
+    if( ThrusterEmergency_RunMonitor() == 0U )
+    {
+        return;
     }
 
     ThrusterSequence_ApplyDueActions();
@@ -1133,6 +1273,10 @@ static void RsTask(void *p)
             if( (notifyValue & RSTASK_NOTIFY_TM_EVENT) != 0U )
             {
                 RsTask_SendSensorPacket();
+            }
+            if( (notifyValue & RSTASK_NOTIFY_THRUSTER_EMERGENCY_DEBUG) != 0U )
+            {
+                RsTask_SendThrusterEmergencyDebugEvents();
             }
             if( (notifyValue & RSTASK_NOTIFY_THRUSTER_DEBUG) != 0U )
             {

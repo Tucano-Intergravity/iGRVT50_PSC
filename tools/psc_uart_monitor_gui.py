@@ -55,7 +55,7 @@ MAX_RX_BUFFER_SIZE = 4096
 COMMAND_RESPONSE_TIMEOUT_SEC = 0.1
 COMMAND_MAX_RETRIES = 5
 MODE_OPTIONS = ("init_mode", "normal_mode", "run_mode", "diagnostic_mode")
-DEBUG_COMMANDS = ("THRDBG", "PARDBG")
+DEBUG_COMMANDS = ("THRDBG", "PARDBG", "EMGDBG")
 
 
 @dataclass
