@@ -77,6 +77,8 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define TCMD_COMMAND_THRUSTER_START "THRUSTER_START"
 #define TCMD_COMMAND_PAR_START      "PAR_START"
 #define TCMD_COMMAND_PAR_STOP       "PAR_STOP"
+#define TCMD_TMREQ_SENSOR_DATA      "SENSOR"
+#define TCMD_TMREQ_SV_DATA          "SV"
 #define TCMD_ACK_DATA               "Ack"
 #define TCMD_RX_LINE_SIZE           512U
 #define TCMD_HEATER_CHANNEL_COUNT   4U
@@ -85,7 +87,8 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define TCMD_HPV_FIELD_OFFSET       (TCMD_LPV_FIELD_OFFSET + LPSOLVALVE_CHANNEL_COUNT)
 #define TCMD_HTR_FIELD_OFFSET       (TCMD_HPV_FIELD_OFFSET + HPSOLVALVE_CHANNEL_COUNT)
 #define TCMD_SP_FIELD_OFFSET        (TCMD_HTR_FIELD_OFFSET + TCMD_HEATER_CHANNEL_COUNT)
-#define TCMD_TMREQ_FIELD_COUNT      2U
+#define TCMD_MIN_FIELD_COUNT        2U
+#define TCMD_TMREQ_FIELD_COUNT      3U
 #define TCMD_MODE_FIELD_COUNT       3U
 #define TCMD_THRUSTER_START_FIELD_COUNT 3U
 #define TCMD_PAR_FIELD_COUNT        2U
@@ -136,6 +139,10 @@ static volatile UInt8 s_parDebugPending = 0U;
 static volatile UInt32 s_parDebugElapsedMs = 0U;
 static volatile UInt32 s_parDebugServiceCount = 0U;
 static volatile eStateMachineMode s_parDebugMode = STATE_MACHINE_INIT_MODE;
+static volatile UInt8 s_svLpvState[LPSOLVALVE_CHANNEL_COUNT] = { 0U };
+static volatile UInt8 s_svHpvState[HPSOLVALVE_CHANNEL_COUNT] = { 0U };
+static volatile UInt8 s_svHeaterState[TCMD_HEATER_CHANNEL_COUNT] = { 0U };
+static volatile UInt8 s_svSparkPlugState = 0U;
 
 /*==============================================================================
  * Local Function
@@ -149,16 +156,23 @@ static void AdcTask(void *p);
 /*-------- RS422 Processing --------*/
 static void RsTask(void *p);
 static void RsTask_SendSensorPacket( void );
+static void RsTask_SendSolvalvePacket( void );
 static void RsTask_SendAckPacket( void );
 static void RsTask_SendThrusterDebugEvents( void );
 static void RsTask_SendParDebugEvent( void );
 static void RsTask_SendThrusterEmergencyDebugEvents( void );
+static UInt8 RsTask_AppendCsvBinary( char *buffer, UInt32 bufferSize, UInt32 *offset, UInt8 value );
 static void RsTask_ProcessRx( void );
 static void RsTask_ProcessTelecommandLine( char *line );
 static UInt8 RsTask_ParseModeField( const char *text, eStateMachineMode *mode );
 static UInt8 RsTask_ParseUInt32Field( const char *text, UInt32 *value );
 static UInt8 RsTask_IsNormalMode( void );
 static UInt8 RsTask_IsDiagnosticMode( void );
+static void RsTask_ClearSolvalveState( void );
+static void RsTask_SetLpvOutput( UInt8 ch, UInt8 on );
+static void RsTask_SetHpvOutput( UInt8 ch, UInt8 on );
+static void RsTask_SetHeaterOutput( UInt8 ch, UInt8 on );
+static void RsTask_SetSparkPlugOutput( UInt8 on );
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
                                      const UInt8 *heaterState, UInt8 spState );
 static void ThrusterSequence_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs );
@@ -306,7 +320,7 @@ static void RsTask_SendSensorPacket( void )
     pcModeName = StateMachine_GetModeName( StateMachine_GetMode() );
 
     iTxLen = snprintf( cTxMsg, sizeof(cTxMsg),
-                       "$iGRVT50,%lu,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
+                       "$iGRVT50,SENTM,%lu,%s,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld,%ld\r\n",
                        (unsigned long)uiPacketTick,
                        pcModeName,
                        (long)stScan.pt.adcMilliVolt[SENSOR_PT1_INDEX],
@@ -332,6 +346,95 @@ static void RsTask_SendSensorPacket( void )
     }
 
     UartComm_SendBlocking( cTxMsg, (UInt32)iTxLen );
+}
+
+static UInt8 RsTask_AppendCsvBinary( char *buffer, UInt32 bufferSize, UInt32 *offset, UInt8 value )
+{
+    UInt32 remaining;
+    int iLen;
+
+    if( (buffer == NULL) || (offset == NULL) || (*offset >= bufferSize) )
+    {
+        return 0U;
+    }
+
+    remaining = bufferSize - *offset;
+    iLen = snprintf( &buffer[*offset], remaining, ",%u",
+                     (unsigned)((value != 0U) ? 1U : 0U) );
+    if( iLen < 0 )
+    {
+        return 0U;
+    }
+    if( (UInt32)iLen >= remaining )
+    {
+        *offset = bufferSize - 1U;
+        return 0U;
+    }
+
+    *offset += (UInt32)iLen;
+    return 1U;
+}
+
+static void RsTask_SendSolvalvePacket( void )
+{
+    UInt32 uiPacketTick;
+    const char *pcModeName;
+    char cTxMsg[192];
+    UInt32 uiOffset;
+    UInt8 i;
+    int iTxLen;
+
+    uiPacketTick = (UInt32)xTaskGetTickCount();
+    pcModeName = StateMachine_GetModeName( StateMachine_GetMode() );
+
+    iTxLen = snprintf( cTxMsg, sizeof(cTxMsg), "%s,SVTM,%lu,%s",
+                       TCMD_PACKET_HEADER,
+                       (unsigned long)uiPacketTick,
+                       pcModeName );
+    if( (iTxLen < 0) || (iTxLen >= (int)sizeof(cTxMsg)) )
+    {
+        return;
+    }
+
+    uiOffset = (UInt32)iTxLen;
+
+    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_AppendCsvBinary( cTxMsg, sizeof(cTxMsg), &uiOffset, s_svLpvState[i] ) == 0U )
+        {
+            return;
+        }
+    }
+
+    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_AppendCsvBinary( cTxMsg, sizeof(cTxMsg), &uiOffset, s_svHpvState[i] ) == 0U )
+        {
+            return;
+        }
+    }
+
+    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
+    {
+        if( RsTask_AppendCsvBinary( cTxMsg, sizeof(cTxMsg), &uiOffset, s_svHeaterState[i] ) == 0U )
+        {
+            return;
+        }
+    }
+
+    if( RsTask_AppendCsvBinary( cTxMsg, sizeof(cTxMsg), &uiOffset, s_svSparkPlugState ) == 0U )
+    {
+        return;
+    }
+
+    iTxLen = snprintf( &cTxMsg[uiOffset], sizeof(cTxMsg) - uiOffset, "\r\n" );
+    if( (iTxLen < 0) || (iTxLen >= (int)(sizeof(cTxMsg) - uiOffset)) )
+    {
+        return;
+    }
+
+    uiOffset += (UInt32)iTxLen;
+    UartComm_SendBlocking( cTxMsg, uiOffset );
 }
 
 static void RsTask_SendAckPacket( void )
@@ -573,6 +676,64 @@ static UInt8 RsTask_IsDiagnosticMode( void )
     return (StateMachine_GetMode() == STATE_MACHINE_DIAGNOSTIC_MODE) ? 1U : 0U;
 }
 
+static void RsTask_ClearSolvalveState( void )
+{
+    UInt8 i;
+
+    for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        s_svLpvState[i] = 0U;
+    }
+    for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
+    {
+        s_svHpvState[i] = 0U;
+    }
+    for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
+    {
+        s_svHeaterState[i] = 0U;
+    }
+    s_svSparkPlugState = 0U;
+}
+
+static void RsTask_SetLpvOutput( UInt8 ch, UInt8 on )
+{
+    if( (ch < 1U) || (ch > LPSOLVALVE_CHANNEL_COUNT) )
+    {
+        return;
+    }
+
+    LpSolValve_Set( ch, on );
+    s_svLpvState[ch - 1U] = (on != 0U) ? 1U : 0U;
+}
+
+static void RsTask_SetHpvOutput( UInt8 ch, UInt8 on )
+{
+    if( (ch < 1U) || (ch > HPSOLVALVE_CHANNEL_COUNT) )
+    {
+        return;
+    }
+
+    HpSolValve_Set( ch, on );
+    s_svHpvState[ch - 1U] = (on != 0U) ? 1U : 0U;
+}
+
+static void RsTask_SetHeaterOutput( UInt8 ch, UInt8 on )
+{
+    if( (ch < 1U) || (ch > TCMD_HEATER_CHANNEL_COUNT) )
+    {
+        return;
+    }
+
+    Heater_SetDuty( ch, (on != 0U) ? 100U : 0U );
+    s_svHeaterState[ch - 1U] = (on != 0U) ? 1U : 0U;
+}
+
+static void RsTask_SetSparkPlugOutput( UInt8 on )
+{
+    SparkPlug_Set( on );
+    s_svSparkPlugState = (on != 0U) ? 1U : 0U;
+}
+
 static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvState,
                                      const UInt8 *heaterState, UInt8 spState )
 {
@@ -585,23 +746,23 @@ static void RsTask_ApplyTelecommand( const UInt8 *lpvState, const UInt8 *hpvStat
 
     for( i = 0U; i < LPSOLVALVE_CHANNEL_COUNT; i++ )
     {
-        LpSolValve_Set( (UInt8)(i + 1U), lpvState[i] );
+        RsTask_SetLpvOutput( (UInt8)(i + 1U), lpvState[i] );
     }
 
     if( RsTask_IsDiagnosticMode() != 0U )
     {
         for( i = 0U; i < HPSOLVALVE_CHANNEL_COUNT; i++ )
         {
-            HpSolValve_Set( (UInt8)(i + 1U), hpvState[i] );
+            RsTask_SetHpvOutput( (UInt8)(i + 1U), hpvState[i] );
         }
     }
 
     for( i = 0U; i < TCMD_HEATER_CHANNEL_COUNT; i++ )
     {
-        Heater_SetDuty( (UInt8)(i + 1U), (heaterState[i] != 0U) ? 100U : 0U );
+        RsTask_SetHeaterOutput( (UInt8)(i + 1U), heaterState[i] );
     }
 
-    SparkPlug_Set( spState );
+    RsTask_SetSparkPlugOutput( spState );
 }
 
 static char s_tcmdRxLine[TCMD_RX_LINE_SIZE];
@@ -773,7 +934,7 @@ static void ThrusterSequence_ApplyDueActions( void )
     if( (s_thrusterSequence.hpv1OpenApplied == 0U) &&
         (elapsedMs >= THRUSTER_HPV1_OPEN_DELAY_MS) )
     {
-        HpSolValve_Set( THRUSTER_HPV1_CHANNEL, 1U );
+        RsTask_SetHpvOutput( THRUSTER_HPV1_CHANNEL, 1U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_HPV1_ON, elapsedMs );
         s_thrusterSequence.hpv1OpenApplied = 1U;
     }
@@ -781,7 +942,7 @@ static void ThrusterSequence_ApplyDueActions( void )
     if( (s_thrusterSequence.hpv2OpenApplied == 0U) &&
         (elapsedMs >= THRUSTER_HPV2_OPEN_DELAY_MS) )
     {
-        HpSolValve_Set( THRUSTER_HPV2_CHANNEL, 1U );
+        RsTask_SetHpvOutput( THRUSTER_HPV2_CHANNEL, 1U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_HPV2_ON, elapsedMs );
         s_thrusterSequence.hpv2OpenApplied = 1U;
     }
@@ -789,7 +950,7 @@ static void ThrusterSequence_ApplyDueActions( void )
     if( (s_thrusterSequence.sparkOnApplied == 0U) &&
         (elapsedMs >= THRUSTER_SPARK_ON_DELAY_MS) )
     {
-        SparkPlug_Set( 1U );
+        RsTask_SetSparkPlugOutput( 1U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_SP_ON, elapsedMs );
         s_thrusterSequence.sparkOnApplied = 1U;
     }
@@ -798,7 +959,7 @@ static void ThrusterSequence_ApplyDueActions( void )
         (s_thrusterSequence.sparkOnApplied != 0U) &&
         (elapsedMs >= sparkOffMs) )
     {
-        SparkPlug_Set( 0U );
+        RsTask_SetSparkPlugOutput( 0U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_SP_OFF, elapsedMs );
         s_thrusterSequence.sparkOffApplied = 1U;
     }
@@ -806,7 +967,7 @@ static void ThrusterSequence_ApplyDueActions( void )
     if( (s_thrusterSequence.hpv1CloseApplied == 0U) &&
         (elapsedMs >= ThrusterSequence_DeadlineMs( burnEndMs, THRUSTER_HPV1_CLOSE_DELAY_MS )) )
     {
-        HpSolValve_Set( THRUSTER_HPV1_CHANNEL, 0U );
+        RsTask_SetHpvOutput( THRUSTER_HPV1_CHANNEL, 0U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_HPV1_OFF, elapsedMs );
         s_thrusterSequence.hpv1CloseApplied = 1U;
     }
@@ -814,7 +975,7 @@ static void ThrusterSequence_ApplyDueActions( void )
     if( (s_thrusterSequence.hpv2CloseApplied == 0U) &&
         (elapsedMs >= ThrusterSequence_DeadlineMs( burnEndMs, THRUSTER_HPV2_CLOSE_DELAY_MS )) )
     {
-        HpSolValve_Set( THRUSTER_HPV2_CHANNEL, 0U );
+        RsTask_SetHpvOutput( THRUSTER_HPV2_CHANNEL, 0U );
         ThrusterSequence_QueueDebugEvent( THRDBG_EVENT_HPV2_OFF, elapsedMs );
         s_thrusterSequence.hpv2CloseApplied = 1U;
     }
@@ -1030,7 +1191,7 @@ static void RsTask_ProcessTelecommandLine( char *line )
         token = strtok( NULL, "," );
     }
 
-    if( fieldCount < TCMD_TMREQ_FIELD_COUNT )
+    if( fieldCount < TCMD_MIN_FIELD_COUNT )
     {
         s_tcmdRxBadFieldCount++;
         return;
@@ -1044,10 +1205,17 @@ static void RsTask_ProcessTelecommandLine( char *line )
 
     if( strcmp( fields[1], TCMD_COMMAND_TMREQ ) == 0 )
     {
-        if( fieldCount == TCMD_TMREQ_FIELD_COUNT )
+        if( (fieldCount == TCMD_TMREQ_FIELD_COUNT) &&
+            (strcmp( fields[2], TCMD_TMREQ_SENSOR_DATA ) == 0) )
         {
             s_tcmdTmreqCount++;
             RsTask_SendSensorPacket();
+        }
+        else if( (fieldCount == TCMD_TMREQ_FIELD_COUNT) &&
+                 (strcmp( fields[2], TCMD_TMREQ_SV_DATA ) == 0) )
+        {
+            s_tcmdTmreqCount++;
+            RsTask_SendSolvalvePacket();
         }
         else
         {
@@ -1888,6 +2056,7 @@ void EnterSafeState( void )
     PIOC_REGS->PIO_PER  = OPU_SPARK_PLUG_PC5_MASK;
     PIOC_REGS->PIO_OER  = OPU_SPARK_PLUG_PC5_MASK;
     PIOC_REGS->PIO_CODR = OPU_SPARK_PLUG_PC5_MASK;
+    RsTask_ClearSolvalveState();
 }
 
 void OpuTask( void *pvParameters )

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-GUI UART monitor for PSC iGRVT50 sensor packets.
+GUI UART monitor for PSC iGRVT50 telemetry and telecommands.
 
-Packet format:
-    $iGRVT50,<tick>,<mode>,<PT1 mV>...<PT9 mV>,<TC1 uV>...<TC4 uV>\r\n
+Packet formats:
+    $iGRVT50,SENTM,<tick>,<mode>,<PT1 mV>...<PT9 mV>,<TC1 uV>...<TC4 uV>\r\n
+    $iGRVT50,SVTM,<tick>,<mode>,<LPV1>...<LPV12>,<HPV1>...<HPV8>,<HTR1>...<HTR4>,<SP>\r\n
 """
 
 from __future__ import annotations
@@ -31,6 +32,12 @@ COMMAND_MODE = "MODE"
 COMMAND_THRUSTER_START = "THRUSTER_START"
 COMMAND_PAR_START = "PAR_START"
 COMMAND_PAR_STOP = "PAR_STOP"
+TMREQ_SENSOR_OPTION = "SENSOR"
+TMREQ_SV_OPTION = "SV"
+PENDING_TMREQ_SENSOR = "TMREQ SENSOR"
+PENDING_TMREQ_SV = "TMREQ SV"
+TM_SENSOR = "SENTM"
+TM_SOLVALVE = "SVTM"
 ACK_DATA = "Ack"
 ACK_COMMANDS = (
     COMMAND_SVCON,
@@ -45,7 +52,8 @@ LPV_COUNT = 12
 HPV_COUNT = 8
 HTR_COUNT = 4
 SP_COUNT = 1
-EXPECTED_FIELD_COUNT = 1 + 1 + 1 + PT_COUNT + TC_COUNT
+SENSOR_TM_FIELD_COUNT = 1 + 1 + 1 + 1 + PT_COUNT + TC_COUNT
+SOLVALVE_TM_FIELD_COUNT = 1 + 1 + 1 + 1 + LPV_COUNT + HPV_COUNT + HTR_COUNT + SP_COUNT
 SVCON_FIELD_COUNT = 1 + 1 + LPV_COUNT + HPV_COUNT + HTR_COUNT + SP_COUNT
 ACK_FIELD_COUNT = 2
 DEFAULT_BAUDRATE = 921600
@@ -68,6 +76,17 @@ class SensorPacket:
 
 
 @dataclass
+class SolvalvePacket:
+    tick: int
+    mode: str
+    lpv_values: list[int]
+    hpv_values: list[int]
+    htr_values: list[int]
+    sp_value: int
+    raw_line: str
+
+
+@dataclass
 class TxRequest:
     text: str
     total_count: int
@@ -85,20 +104,48 @@ class PendingCommand:
     waiting_for_tx: bool = False
 
 
-def parse_packet(line: str) -> SensorPacket:
+def parse_packet(line: str) -> SensorPacket | SolvalvePacket:
     fields = line.strip().split(",")
-    if len(fields) != EXPECTED_FIELD_COUNT:
-        raise ValueError(f"field count {len(fields)} != {EXPECTED_FIELD_COUNT}")
     if fields[0] != HEADER:
         raise ValueError(f"header {fields[0]!r} != {HEADER!r}")
+    if len(fields) < 2:
+        raise ValueError("missing telemetry type")
 
-    tick = int(fields[1], 10)
-    mode = fields[2]
-    pt_start = 3
-    tc_start = pt_start + PT_COUNT
-    pt_values = [int(value, 10) for value in fields[pt_start:tc_start]]
-    tc_values = [int(value, 10) for value in fields[tc_start : tc_start + TC_COUNT]]
-    return SensorPacket(tick=tick, mode=mode, pt_values=pt_values, tc_values=tc_values, raw_line=line)
+    if fields[1] == TM_SENSOR:
+        if len(fields) != SENSOR_TM_FIELD_COUNT:
+            raise ValueError(f"sensor field count {len(fields)} != {SENSOR_TM_FIELD_COUNT}")
+        tick = int(fields[2], 10)
+        mode = fields[3]
+        pt_start = 4
+        tc_start = pt_start + PT_COUNT
+        pt_values = [int(value, 10) for value in fields[pt_start:tc_start]]
+        tc_values = [int(value, 10) for value in fields[tc_start : tc_start + TC_COUNT]]
+        return SensorPacket(tick=tick, mode=mode, pt_values=pt_values, tc_values=tc_values, raw_line=line)
+
+    if fields[1] == TM_SOLVALVE:
+        if len(fields) != SOLVALVE_TM_FIELD_COUNT:
+            raise ValueError(f"solvalve field count {len(fields)} != {SOLVALVE_TM_FIELD_COUNT}")
+        tick = int(fields[2], 10)
+        mode = fields[3]
+        lpv_start = 4
+        hpv_start = lpv_start + LPV_COUNT
+        htr_start = hpv_start + HPV_COUNT
+        sp_index = htr_start + HTR_COUNT
+        lpv_values = [int(value, 10) for value in fields[lpv_start:hpv_start]]
+        hpv_values = [int(value, 10) for value in fields[hpv_start:htr_start]]
+        htr_values = [int(value, 10) for value in fields[htr_start:sp_index]]
+        sp_value = int(fields[sp_index], 10)
+        return SolvalvePacket(
+            tick=tick,
+            mode=mode,
+            lpv_values=lpv_values,
+            hpv_values=hpv_values,
+            htr_values=htr_values,
+            sp_value=sp_value,
+            raw_line=line,
+        )
+
+    raise ValueError(f"telemetry type {fields[1]!r} is not supported")
 
 
 def is_ack_packet(line: str) -> bool:
@@ -233,9 +280,9 @@ class SerialReader(threading.Thread):
 class PscUartMonitorApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("PSC UART Sensor Monitor")
-        self.geometry("1180x760")
-        self.minsize(980, 700)
+        self.title("PSC UART Monitor")
+        self.geometry("1180x860")
+        self.minsize(980, 780)
 
         self.rx_queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self.reader: SerialReader | None = None
@@ -263,6 +310,10 @@ class PscUartMonitorApp(tk.Tk):
 
         self.pt_vars = [tk.StringVar(value="-") for _ in range(PT_COUNT)]
         self.tc_vars = [tk.StringVar(value="-") for _ in range(TC_COUNT)]
+        self.lpv_tm_vars = [tk.StringVar(value="-") for _ in range(LPV_COUNT)]
+        self.hpv_tm_vars = [tk.StringVar(value="-") for _ in range(HPV_COUNT)]
+        self.htr_tm_vars = [tk.StringVar(value="-") for _ in range(HTR_COUNT)]
+        self.sp_tm_var = tk.StringVar(value="-")
         self.lpv_cmd_vars = [tk.IntVar(value=0) for _ in range(LPV_COUNT)]
         self.hpv_cmd_vars = [tk.IntVar(value=0) for _ in range(HPV_COUNT)]
         self.htr_cmd_vars = [tk.IntVar(value=0) for _ in range(HTR_COUNT)]
@@ -276,7 +327,7 @@ class PscUartMonitorApp(tk.Tk):
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
-        self.rowconfigure(5, weight=1)
+        self.rowconfigure(6, weight=1)
 
         connection = ttk.LabelFrame(self, text="Connection")
         connection.grid(row=0, column=0, padx=12, pady=(12, 6), sticky="ew")
@@ -338,8 +389,36 @@ class PscUartMonitorApp(tk.Tk):
         for idx, value_var in enumerate(self.tc_vars):
             self._add_value_cell(tc_frame, 0, idx, f"TC{idx + 1}", value_var, "uV")
 
+        telemetry_actuator_frame = ttk.LabelFrame(self, text="Telemetry - Actuator States")
+        telemetry_actuator_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
+        telemetry_actuator_frame.columnconfigure(0, weight=3)
+        telemetry_actuator_frame.columnconfigure(1, weight=2)
+        telemetry_actuator_frame.columnconfigure(2, weight=2)
+
+        lpv_tm_frame = ttk.LabelFrame(telemetry_actuator_frame, text="LPV")
+        lpv_tm_frame.grid(row=0, column=0, padx=(10, 8), pady=8, sticky="ew")
+        for col in range(6):
+            lpv_tm_frame.columnconfigure(col, weight=1)
+        for idx, variable in enumerate(self.lpv_tm_vars):
+            self._add_state_cell(lpv_tm_frame, idx // 6, idx % 6, f"LPV{idx + 1}", variable)
+
+        hpv_tm_frame = ttk.LabelFrame(telemetry_actuator_frame, text="HPV")
+        hpv_tm_frame.grid(row=0, column=1, padx=(8, 10), pady=8, sticky="ew")
+        for col in range(4):
+            hpv_tm_frame.columnconfigure(col, weight=1)
+        for idx, variable in enumerate(self.hpv_tm_vars):
+            self._add_state_cell(hpv_tm_frame, idx // 4, idx % 4, f"HPV{idx + 1}", variable)
+
+        htr_tm_frame = ttk.LabelFrame(telemetry_actuator_frame, text="Heater / SP")
+        htr_tm_frame.grid(row=0, column=2, padx=(8, 10), pady=8, sticky="ew")
+        for col in range(5):
+            htr_tm_frame.columnconfigure(col, weight=1)
+        for idx, variable in enumerate(self.htr_tm_vars):
+            self._add_state_cell(htr_tm_frame, 0, idx, f"HTR{idx + 1}", variable)
+        self._add_state_cell(htr_tm_frame, 0, HTR_COUNT, "SP", self.sp_tm_var)
+
         command_frame = ttk.LabelFrame(self, text="Telecommand - Actuators")
-        command_frame.grid(row=3, column=0, padx=12, pady=6, sticky="ew")
+        command_frame.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
         command_frame.columnconfigure(0, weight=3)
         command_frame.columnconfigure(1, weight=2)
         command_frame.columnconfigure(2, weight=2)
@@ -367,7 +446,7 @@ class PscUartMonitorApp(tk.Tk):
         self._add_valve_check(htr_frame, 0, HTR_COUNT, "SP", self.sp_cmd_var)
 
         control_frame = ttk.LabelFrame(self, text="Commands")
-        control_frame.grid(row=4, column=0, padx=12, pady=6, sticky="ew")
+        control_frame.grid(row=5, column=0, padx=12, pady=6, sticky="ew")
         control_frame.columnconfigure(0, weight=1)
         control_frame.columnconfigure(1, weight=1)
         control_frame.columnconfigure(2, weight=1)
@@ -393,27 +472,34 @@ class PscUartMonitorApp(tk.Tk):
 
         command_buttons = ttk.Frame(control_frame)
         command_buttons.grid(row=0, column=1, padx=10, pady=10, sticky="e")
-        self.request_tm_button = ttk.Button(
+        self.request_sensor_tm_button = ttk.Button(
             command_buttons,
-            text="Request TM",
-            command=self.send_tmreq,
+            text="Sensor TM",
+            command=self.send_sensor_tmreq,
             state="disabled",
         )
-        self.request_tm_button.grid(row=0, column=0, padx=(0, 6))
+        self.request_sensor_tm_button.grid(row=0, column=0, padx=(0, 6))
+        self.request_sv_tm_button = ttk.Button(
+            command_buttons,
+            text="SV TM",
+            command=self.send_sv_tmreq,
+            state="disabled",
+        )
+        self.request_sv_tm_button.grid(row=0, column=1, padx=(0, 6))
         self.send_command_button = ttk.Button(
             command_buttons,
             text="Send SVCON",
             command=self.send_telecommand,
             state="disabled",
         )
-        self.send_command_button.grid(row=0, column=1, padx=(0, 6))
+        self.send_command_button.grid(row=0, column=2, padx=(0, 6))
         self.all_off_button = ttk.Button(
             command_buttons,
             text="All Off",
             command=self.send_all_off,
             state="disabled",
         )
-        self.all_off_button.grid(row=0, column=2)
+        self.all_off_button.grid(row=0, column=3)
 
         sequence_frame = ttk.Frame(control_frame)
         sequence_frame.grid(row=0, column=2, padx=10, pady=10, sticky="e")
@@ -443,7 +529,7 @@ class PscUartMonitorApp(tk.Tk):
         self.par_stop_button.grid(row=0, column=4)
 
         log_frame = ttk.LabelFrame(self, text="Log")
-        log_frame.grid(row=5, column=0, padx=12, pady=(6, 12), sticky="nsew")
+        log_frame.grid(row=6, column=0, padx=12, pady=(6, 12), sticky="nsew")
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
@@ -482,6 +568,13 @@ class PscUartMonitorApp(tk.Tk):
         value_row.grid(row=1, column=0, sticky="ew")
         ttk.Label(value_row, textvariable=variable, font=("Consolas", 14, "bold")).grid(row=0, column=0, sticky="w")
         ttk.Label(value_row, text=unit).grid(row=0, column=1, padx=(4, 0), sticky="s")
+
+    def _add_state_cell(self, parent: ttk.Frame, row: int, column: int, label: str, variable: tk.StringVar) -> None:
+        frame = ttk.Frame(parent, padding=(4, 3))
+        frame.grid(row=row, column=column, padx=4, pady=3, sticky="ew")
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(frame, text=label).grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, textvariable=variable, font=("Consolas", 12, "bold")).grid(row=1, column=0, sticky="w")
 
     def _add_valve_check(self, parent: ttk.Frame, row: int, column: int, label: str, variable: tk.IntVar) -> None:
         check = ttk.Checkbutton(parent, text=label, variable=variable)
@@ -534,8 +627,16 @@ class PscUartMonitorApp(tk.Tk):
         self.serial_error_count_var.set("0")
         self.tc_timeout_count_var.set("0")
         self.tick_var.set("-")
+        self.tm_mode_var.set("-")
         self.last_update_var.set("-")
         self.age_var.set("-")
+        for variable in self.lpv_tm_vars:
+            variable.set("-")
+        for variable in self.hpv_tm_vars:
+            variable.set("-")
+        for variable in self.htr_tm_vars:
+            variable.set("-")
+        self.sp_tm_var.set("-")
         self._set_connected_ui(False)
         self.connect_button.configure(state="disabled")
         self.disconnect_button.configure(state="normal")
@@ -568,8 +669,8 @@ class PscUartMonitorApp(tk.Tk):
         states.append(str(self.sp_cmd_var.get() & 1))
         return f"{HEADER},{COMMAND_SVCON},{','.join(states)}\r\n"
 
-    def build_tmreq_packet(self) -> str:
-        return f"{HEADER},{COMMAND_TMREQ}\r\n"
+    def build_tmreq_packet(self, option: str) -> str:
+        return f"{HEADER},{COMMAND_TMREQ},{option}\r\n"
 
     def build_mode_packet(self) -> str:
         mode = self.mode_var.get().strip()
@@ -636,8 +737,17 @@ class PscUartMonitorApp(tk.Tk):
     def send_telecommand(self) -> None:
         self._start_pending_command(COMMAND_SVCON, self.build_telecommand_packet())
 
-    def send_tmreq(self) -> None:
-        self._start_pending_command(COMMAND_TMREQ, self.build_tmreq_packet())
+    def send_sensor_tmreq(self) -> None:
+        self._start_pending_command(
+            PENDING_TMREQ_SENSOR,
+            self.build_tmreq_packet(TMREQ_SENSOR_OPTION),
+        )
+
+    def send_sv_tmreq(self) -> None:
+        self._start_pending_command(
+            PENDING_TMREQ_SV,
+            self.build_tmreq_packet(TMREQ_SV_OPTION),
+        )
 
     def send_mode(self) -> None:
         self._start_pending_command(COMMAND_MODE, self.build_mode_packet())
@@ -706,8 +816,9 @@ class PscUartMonitorApp(tk.Tk):
         self._check_command_timeout()
         self.after(20, self._poll_queue)
 
-    def _handle_packet(self, packet: SensorPacket) -> None:
+    def _handle_packet(self, packet: SensorPacket | SolvalvePacket) -> None:
         now = datetime.now()
+        completed_pending = False
         self.packet_count += 1
         self.last_packet_time = time.monotonic()
 
@@ -716,14 +827,29 @@ class PscUartMonitorApp(tk.Tk):
         self.packet_count_var.set(str(self.packet_count))
         self.last_update_var.set(now.strftime("%H:%M:%S"))
 
-        for value_var, value in zip(self.pt_vars, packet.pt_values):
-            value_var.set(str(value))
-        for value_var, value in zip(self.tc_vars, packet.tc_values):
-            value_var.set(str(value))
+        if isinstance(packet, SensorPacket):
+            for value_var, value in zip(self.pt_vars, packet.pt_values):
+                value_var.set(str(value))
+            for value_var, value in zip(self.tc_vars, packet.tc_values):
+                value_var.set(str(value))
 
-        if self.pending_command is not None and self.pending_command.command == COMMAND_TMREQ:
-            self._complete_pending_command("TM received")
-        elif self.pending_command is None:
+            if self.pending_command is not None and self.pending_command.command == PENDING_TMREQ_SENSOR:
+                self._complete_pending_command("SENTM received")
+                completed_pending = True
+        elif isinstance(packet, SolvalvePacket):
+            for value_var, value in zip(self.lpv_tm_vars, packet.lpv_values):
+                value_var.set(str(value))
+            for value_var, value in zip(self.hpv_tm_vars, packet.hpv_values):
+                value_var.set(str(value))
+            for value_var, value in zip(self.htr_tm_vars, packet.htr_values):
+                value_var.set(str(value))
+            self.sp_tm_var.set(str(packet.sp_value))
+
+            if self.pending_command is not None and self.pending_command.command == PENDING_TMREQ_SV:
+                self._complete_pending_command("SVTM received")
+                completed_pending = True
+
+        if self.pending_command is None and not completed_pending:
             self._set_status("Receiving")
         if self.pending_command is None:
             self._set_connected_ui(self.reader is not None)
@@ -787,7 +913,8 @@ class PscUartMonitorApp(tk.Tk):
         self.disconnect_button.configure(state="normal" if serial_active else "disabled")
         self.port_combo.configure(state="disabled" if serial_active else "readonly")
         self.baud_combo.configure(state="disabled" if serial_active else "normal")
-        self.request_tm_button.configure(state="normal" if command_ready else "disabled")
+        self.request_sensor_tm_button.configure(state="normal" if command_ready else "disabled")
+        self.request_sv_tm_button.configure(state="normal" if command_ready else "disabled")
         self.send_command_button.configure(state="normal" if command_ready else "disabled")
         self.all_off_button.configure(state="normal" if command_ready else "disabled")
         self.send_mode_button.configure(state="normal" if command_ready else "disabled")
