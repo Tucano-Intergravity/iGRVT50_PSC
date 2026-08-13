@@ -14,5 +14,7 @@ void HpSolValve_Toggle( UInt8 ch );
 UInt8 HpSolValve_IsOn( UInt8 ch );
 UInt16 HpSolValve_GetConfiguredPeakMilliAmp( UInt8 ch );
 UInt16 HpSolValve_GetConfiguredHoldMilliAmp( UInt8 ch );
+UInt8 HpSolValve_GetConfigOkMask( void );
+UInt32 HpSolValve_GetConfigRecoverCount( void );
 
 #endif /* IGRVT50_HPSOLVALVE_H */

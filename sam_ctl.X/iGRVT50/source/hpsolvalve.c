@@ -24,6 +24,8 @@ static volatile UInt8 s_hpsvOn[HPSOLVALVE_CHANNEL_COUNT] = { 0U };
 static volatile UInt8 s_hpsvNodeConfigured[HPSV_DRV_NODE_COUNT] = { 0U };
 static volatile eHpSolValveState s_hpsvState[HPSOLVALVE_CHANNEL_COUNT] = { HPSV_STATE_OFF };
 static volatile UInt16 s_hpsvOpenTicks[HPSOLVALVE_CHANNEL_COUNT] = { 0U };
+static volatile UInt16 s_hpsvLastConfigA4[HPSV_DRV_NODE_COUNT] = { 0U };
+static volatile UInt32 s_hpsvConfigRecoverCount = 0U;
 static UInt8 s_hpsvRequestedPeakReg[HPSOLVALVE_CHANNEL_COUNT] = {
     HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
     HPSV_CURRENT_800MA_REG, HPSV_CURRENT_800MA_REG,
@@ -134,6 +136,7 @@ static void HpSolValve_UpdateEnablePins( void )
 
 static void HpSolValve_ApplyNodeCurrentConfig( UInt8 node )
 {
+    UInt8 echo = 0U;
     UInt8 firstIdx;
     UInt16 status0 = 0U;
 
@@ -149,6 +152,7 @@ static void HpSolValve_ApplyNodeCurrentConfig( UInt8 node )
     g_drvPC[1] = s_hpsvPeakReg[firstIdx + 1U];
     g_drvHC[1] = s_hpsvHoldReg[firstIdx + 1U];
     (void)DRV3946_Wake( &status0 );
+    s_hpsvLastConfigA4[node] = DRV3946_Read24( DRV3946_CONFIG_A4_REG, node, &echo );
     s_hpsvNodeConfigured[node] = 1U;
 }
 
@@ -156,6 +160,7 @@ static void HpSolValve_EnsureNodeConfigured( UInt8 node )
 {
     UInt8 echo = 0U;
     UInt16 status0;
+    UInt16 configA4;
 
     if( node >= HPSV_DRV_NODE_COUNT )
     {
@@ -164,10 +169,17 @@ static void HpSolValve_EnsureNodeConfigured( UInt8 node )
 
     DRV3946_SetNode( node );
     status0 = DRV3946_Read24( 0x01U, node, &echo );
+    configA4 = DRV3946_Read24( DRV3946_CONFIG_A4_REG, node, &echo );
+    s_hpsvLastConfigA4[node] = configA4;
     if( (s_hpsvNodeConfigured[node] == 0U) ||
         ((status0 & 0x2000U) != 0U) ||
-        (status0 == 0xFFFFU) )
+        (status0 == 0xFFFFU) ||
+        (configA4 != DRV3946_CONFIG_A4_CH2_EN2_VALUE) )
     {
+        if( s_hpsvNodeConfigured[node] != 0U )
+        {
+            s_hpsvConfigRecoverCount++;
+        }
         HpSolValve_ApplyNodeCurrentConfig( node );
     }
 }
@@ -420,4 +432,26 @@ UInt16 HpSolValve_GetConfiguredHoldMilliAmp( UInt8 ch )
     idx = HpSolValve_ChannelToIndex( ch );
 
     return HpSolValve_RegToMilliAmp( s_hpsvRequestedHoldReg[idx] );
+}
+
+UInt8 HpSolValve_GetConfigOkMask( void )
+{
+    UInt8 node;
+    UInt8 mask = 0U;
+
+    for( node = 0U; node < HPSV_DRV_NODE_COUNT; node++ )
+    {
+        if( (s_hpsvNodeConfigured[node] != 0U) &&
+            (s_hpsvLastConfigA4[node] == DRV3946_CONFIG_A4_CH2_EN2_VALUE) )
+        {
+            mask |= (UInt8)(1U << node);
+        }
+    }
+
+    return mask;
+}
+
+UInt32 HpSolValve_GetConfigRecoverCount( void )
+{
+    return s_hpsvConfigRecoverCount;
 }

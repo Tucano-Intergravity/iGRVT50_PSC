@@ -16,29 +16,38 @@ foreach(source_file ${sam_ctl_default_default_XC32_FILE_TYPE_assembleWithPreproc
 endforeach()
 
 set(sam_ctl_default_default_XC32_FILE_TYPE_compile
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/hpsolvalve.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/lpsolvalve.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/sensor.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../sam_ctl.X/iGRVT50/source/statemachine.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/adc_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/exceptions.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/freertos_hooks.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/initialization.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/interrupts.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/libc_syscalls.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/afec/plib_afec0.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/afec/plib_afec1.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/clk/plib_clk.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/efc/plib_efc.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/nvic/plib_nvic.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/pio/plib_pio.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/pwm/plib_pwm0.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/pwm/plib_pwm1.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/spi/spi_master/plib_spi0_master.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/spi/spi_master/plib_spi1_master.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/systick/plib_systick.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/uart/plib_uart1.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/tc/plib_tc0.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/tc/plib_tc1.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/tc/plib_tc3.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/usart/plib_usart0.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/peripheral/usart/plib_usart1.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/startup_xc32.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/stdio/xc32_monitor.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/dbg_task.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/main.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/opu_task.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/pwm_func.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/rs422_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/tc_func.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/third_party/rtos/FreeRTOS/Source/FreeRTOS_tasks.c"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/third_party/rtos/FreeRTOS/Source/croutine.c"
@@ -53,7 +62,6 @@ set_source_files_properties(${sam_ctl_default_default_XC32_FILE_TYPE_compile} PR
 set(sam_ctl_default_default_XC32_FILE_TYPE_compile_cpp)
 set_source_files_properties(${sam_ctl_default_default_XC32_FILE_TYPE_compile_cpp} PROPERTIES LANGUAGE CXX)
 set(sam_ctl_default_default_XC32_FILE_TYPE_link)
-set(sam_ctl_default_default_XC32_FILE_TYPE_bin2hex)
 
 # The linker script used for the build.
 set(sam_ctl_default_LINKER_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../../../src/config/default/ATSAMV71Q21B.ld")

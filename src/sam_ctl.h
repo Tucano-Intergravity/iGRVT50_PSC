@@ -81,6 +81,21 @@ extern void RS485_SetTransmit( UInt8 ucEnable );
 /* --- 안전 --- */
 extern void EnterSafeState( void );    /* 모든 액추에이터 강제 OFF (폴트/리셋/명령) */
 
+/* --- Thruster start sequence build-time parameters ---
+ * All delays are fixed at build time and are serviced on the 10 ms OPU timer.
+ * Valve open and spark-on delays are relative to THRUSTER_START TC acceptance.
+ * Spark plug off timing is relative to spark-on timing.
+ * Valve close delays are relative to burn_time expiration.
+ */
+#define THRUSTER_HPV1_CHANNEL              1U
+#define THRUSTER_HPV2_CHANNEL              2U
+#define THRUSTER_HPV1_OPEN_DELAY_MS        1000UL
+#define THRUSTER_HPV2_OPEN_DELAY_MS        2000UL
+#define THRUSTER_SPARK_ON_DELAY_MS         500UL
+#define THRUSTER_SPARK_ON_DURATION_MS      3000UL
+#define THRUSTER_HPV1_CLOSE_DELAY_MS       500UL
+#define THRUSTER_HPV2_CLOSE_DELAY_MS       2000UL
+
 /* --- Micro 밸브 전압제어 (Peak 28V -> Hold 2.5V) --- */
 extern void MicroValve_Open( UInt8 ucCh );    /* peak 듀티 + start */
 extern void MicroValve_Hold( UInt8 ucCh );    /* hold 듀티 전환 */
@@ -101,6 +116,9 @@ extern void Heater_SetDuty( UInt8 ucCh, UInt8 ucPct );
 extern void SparkPlug_Set( UInt8 on );
 
 /* --- HP Valve Driver DRV3946-Q1 (SPI1) --- */
+#define DRV3946_CONFIG_A4_REG              0x14U
+#define DRV3946_CONFIG_A4_CH2_EN2_VALUE    0x530CU
+
 extern UInt8  g_drvPC[2];
 extern UInt8  g_drvHC[2];
 extern void   DRV3946_SPI_Init( void );

@@ -150,9 +150,19 @@ static void htr_pin_off( UInt32 mask )
     PIOE_REGS->PIO_OER  = mask;     /* 출력 */
     PIOE_REGS->PIO_CODR = mask;     /* LOW -> 게이트 L -> FET off -> 히터 off */
 }
+
+static void htr_pin_on( UInt32 mask )
+{
+    PIOE_REGS->PIO_PER  = mask;
+    PIOE_REGS->PIO_OER  = mask;
+    PIOE_REGS->PIO_SODR = mask;
+}
+
 /* duty>0%: 핀을 다시 peripheral(TC3 TIOA/B)로 복귀 */
 static void htr_pin_pwm( UInt32 mask )
 {
+    PIOE_REGS->PIO_ABCDSR[0] |=  mask;
+    PIOE_REGS->PIO_ABCDSR[1] &= ~mask;
     PIOE_REGS->PIO_PDR  = mask;     /* peripheral B(TIOA9/TIOB9) 복귀 */
 }
 
@@ -172,10 +182,9 @@ void Heater_Init( void )
                         | (1UL << (ID_TC3_CHANNEL0 + 1U - 32U))
                         | (1UL << (ID_TC2_CHANNEL0 - 32U));   /* TC2 ch0 kept idle while PC5 is SP GPIO */
 
-    /* 1.5) PE3/PE4 = peripheral B (TC3 TIOA10/TIOB10).
-     *  PE0/PE1은 MCC가 이미 B로 설정. (B = ABCDSR[0] bit=1, ABCDSR[1] bit=0) */
-    PIOE_REGS->PIO_ABCDSR[0] |=  (HTR_PE3_MASK | HTR_PE4_MASK);
-    PIOE_REGS->PIO_ABCDSR[1] &= ~(HTR_PE3_MASK | HTR_PE4_MASK);
+    /* 1.5) PE0/PE1/PE3/PE4 = peripheral B when PWM duty is used. */
+    PIOE_REGS->PIO_ABCDSR[0] |=  (HTR_PE0_MASK | HTR_PE1_MASK | HTR_PE3_MASK | HTR_PE4_MASK);
+    PIOE_REGS->PIO_ABCDSR[1] &= ~(HTR_PE0_MASK | HTR_PE1_MASK | HTR_PE3_MASK | HTR_PE4_MASK);
     PIOC_REGS->PIO_ABCDSR[0] |=  HTR_PC5_MASK;
     PIOC_REGS->PIO_ABCDSR[1] &= ~HTR_PC5_MASK;
 
@@ -199,8 +208,7 @@ void Heater_Init( void )
     TC2_REGS->TC_CHANNEL[0].TC_RA = 0U;
     TC2_REGS->TC_CHANNEL[0].TC_CCR = TC_CCR_CLKEN_Msk | TC_CCR_SWTRG_Msk;
 
-    /* 4) 부팅 시 Heater 1~4 + SP 모두 OFF 보장 (GPIO LOW 고정) */
-    htr_pin_off( HTR_PE0_MASK | HTR_PE1_MASK | HTR_PE3_MASK | HTR_PE4_MASK );  /* PIOE: HTR1~4 */
+    htr_pin_off( HTR_PE0_MASK | HTR_PE1_MASK | HTR_PE3_MASK | HTR_PE4_MASK );
     PIOC_REGS->PIO_PER  = HTR_PC5_MASK;     /* PIOC: SP(PC5) OFF */
     PIOC_REGS->PIO_OER  = HTR_PC5_MASK;
     PIOC_REGS->PIO_CODR = HTR_PC5_MASK;
@@ -237,9 +245,15 @@ void Heater_SetDuty( UInt8 ucCh, UInt8 ucPct )
         return;
     }
 
-    htr_pin_pwm( mask );                             /* peripheral(TC3) 복귀 */
-    if( ucPct >= 100U ) uiDuty = HTR_TC_PERIOD + 1U; /* 100%: RA>RC -> 항상 ON */
-    else                uiDuty = ((UInt32)HTR_TC_PERIOD * ucPct) / 100U;
+    if( ucPct >= 100U )
+    {
+        htr_pin_on( mask );                          /* 100%: GPIO HIGH 고정 */
+        printf( "Heater%d duty = 100%% (ON, GPIO high)\r\n", ucCh );
+        return;
+    }
+
+    htr_pin_pwm( mask );                             /* 1~99%: peripheral(TC3) PWM */
+    uiDuty = ((UInt32)HTR_TC_PERIOD * ucPct) / 100U;
 
     if( useA ) TC3_REGS->TC_CHANNEL[tcch].TC_RA = uiDuty;   /* TIOA high-time */
     else       TC3_REGS->TC_CHANNEL[tcch].TC_RB = uiDuty;   /* TIOB high-time */

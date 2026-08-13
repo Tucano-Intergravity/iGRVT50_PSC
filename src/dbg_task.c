@@ -1438,7 +1438,7 @@ static int testHpvFunc(int argc, char *argv[])
 			{
 				DRV3946Q1_KILL_ALL_Clear();                 /* 정상운전 (KILL 해제) — ※폴라리티 확인 */
 				if( ch==1U ) DRV3946Q1_EN1_Set(); else DRV3946Q1_EN2_Set();
-				/* TODO(SPI 복구 후): REINIT_NAD+CLR_FAULT -> CONFIG(peak~1A/hold~0.07A) -> CMD1 CHx_CTRL=enable */
+				/* TODO(SPI 복구 후): CONFIG_A/B(+CRC)+CLR_FAULT -> CMD1 CHx_CTRL=enable */
 			}
 			else
 			{
@@ -1463,12 +1463,13 @@ static int testHpvFunc(int argc, char *argv[])
 			        (unsigned)s0, (unsigned)s1, (unsigned)((s1>>10)&0x3U) );
 			printf( "  S1 CRC경고 A=%u B=%u (0=정상수락=STANDBY 진입)\r\n",
 			        (unsigned)((s1>>1)&1U), (unsigned)(s1&1U) );
-			{	/* CONFIG_A0 되읽기 -> 쓰기가 먹었는지 확정 (ED01=성공 / C040=리셋=실패) */
+			{	/* CONFIG_A0/A4 되읽기 -> 쓰기와 CH2 EN2 pin config가 먹었는지 확정 */
 				extern UInt16 DRV3946_Read24( UInt8 reg5, UInt8 node2, UInt8 *echo );
-				UInt8 e2=0; UInt16 a0;
+				UInt8 e2=0; UInt16 a0, a4;
 				a0 = DRV3946_Read24( 0x10U, g_drvNode, &e2 );
-				printf( "  CONFIG_A0 readback=0x%04X (ED01=쓰기성공/STANDBY, C040=리셋=INIT2갇힘) echo=0x%02X\r\n",
-				        (unsigned)a0, (unsigned)e2 );
+				a4 = DRV3946_Read24( DRV3946_CONFIG_A4_REG, g_drvNode, &e2 );
+				printf( "  CONFIG_A0=0x%04X CONFIG_A4=0x%04X(expect 0x%04X, CH2 EN2) echo=0x%02X\r\n",
+				        (unsigned)a0, (unsigned)a4, (unsigned)DRV3946_CONFIG_A4_CH2_EN2_VALUE, (unsigned)e2 );
 			}
 			return(0);
 		}
@@ -1691,17 +1692,17 @@ static int testHpvFunc(int argc, char *argv[])
 		{
 			extern UInt16 DRV3946_Write24( UInt8 reg5, UInt16 data, UInt8 *echo );
 			extern UInt16 DRV3946_Read24( UInt8 reg5, UInt8 node2, UInt8 *echo );
-			UInt16 A[6] = { 0xED01U, 0xED01U, 0x2424U, 0x0088U, 0x130CU, 0x8000U };
+			UInt16 A[6] = { 0xED01U, 0xED01U, 0x2424U, 0x0088U, DRV3946_CONFIG_A4_CH2_EN2_VALUE, 0x8000U };
 			UInt8 e=0; UInt16 s1=0; int i,c,t,found=-1;
-			for( i=0;i<6;i++ ){ for(t=0;t<3;t++){ (void)DRV3946_Write24((UInt8)(0x10U+i),A[i],&e); if(DRV3946_Read24((UInt8)(0x10U+i),0U,&e)==A[i])break; } }
+			for( i=0;i<6;i++ ){ for(t=0;t<3;t++){ (void)DRV3946_Write24((UInt8)(0x10U+i),A[i],&e); if(DRV3946_Read24((UInt8)(0x10U+i),g_drvNode,&e)==A[i])break; } }
 			printf( "실제 A0-A5: %04X %04X %04X %04X %04X %04X\r\n",
-			        (unsigned)DRV3946_Read24(0x10U,0U,&e),(unsigned)DRV3946_Read24(0x11U,0U,&e),
-			        (unsigned)DRV3946_Read24(0x12U,0U,&e),(unsigned)DRV3946_Read24(0x13U,0U,&e),
-			        (unsigned)DRV3946_Read24(0x14U,0U,&e),(unsigned)DRV3946_Read24(0x15U,0U,&e) );
+			        (unsigned)DRV3946_Read24(0x10U,g_drvNode,&e),(unsigned)DRV3946_Read24(0x11U,g_drvNode,&e),
+			        (unsigned)DRV3946_Read24(0x12U,g_drvNode,&e),(unsigned)DRV3946_Read24(0x13U,g_drvNode,&e),
+			        (unsigned)DRV3946_Read24(0x14U,g_drvNode,&e),(unsigned)DRV3946_Read24(0x15U,g_drvNode,&e) );
 			for( c=0; c<256; c++ )
 			{
 				for( t=0;t<3;t++ ){ (void)DRV3946_Write24( 0x16U, (UInt16)c, &e ); }   /* A6=c (위치실패 대비 3회) */
-				s1 = DRV3946_Read24( 0x02U, 0U, &e );
+				s1 = DRV3946_Read24( 0x02U, g_drvNode, &e );
 				if( ((s1>>1)&1U)==0U ){ found=c; break; }
 			}
 			if( found>=0 ) printf( "★ CONFIG_A CRC = 0x%02X 에서 CONFIG_A_CRC_W 해제! STATUS1=0x%04X\r\n", (unsigned)found, (unsigned)s1 );
@@ -1714,10 +1715,10 @@ static int testHpvFunc(int argc, char *argv[])
 		{
 			extern UInt16 DRV3946_Write24( UInt8 reg5, UInt16 data, UInt8 *echo );
 			extern UInt16 DRV3946_Read24( UInt8 reg5, UInt8 node2, UInt8 *echo );
-			UInt16 A[6] = { 0xED01U, 0xED01U, 0x2424U, 0x0088U, 0x130CU, 0x8000U };
+			UInt16 A[6] = { 0xED01U, 0xED01U, 0x2424U, 0x0088U, DRV3946_CONFIG_A4_CH2_EN2_VALUE, 0x8000U };
 			UInt16 act[6]; UInt8 e=0, buf[20], crc; UInt16 s1; int i,k,v,n,t;
-			for( i=0;i<6;i++ ){ for(t=0;t<3;t++){ (void)DRV3946_Write24((UInt8)(0x10U+i),A[i],&e); if(DRV3946_Read24((UInt8)(0x10U+i),0U,&e)==A[i])break; } }
-			for( i=0;i<6;i++ ){ act[i]=DRV3946_Read24((UInt8)(0x10U+i),0U,&e); }
+			for( i=0;i<6;i++ ){ for(t=0;t<3;t++){ (void)DRV3946_Write24((UInt8)(0x10U+i),A[i],&e); if(DRV3946_Read24((UInt8)(0x10U+i),g_drvNode,&e)==A[i])break; } }
+			for( i=0;i<6;i++ ){ act[i]=DRV3946_Read24((UInt8)(0x10U+i),g_drvNode,&e); }
 			printf( "실제 A0-A5: %04X %04X %04X %04X %04X %04X\r\n",
 			        (unsigned)act[0],(unsigned)act[1],(unsigned)act[2],(unsigned)act[3],(unsigned)act[4],(unsigned)act[5] );
 			printf( "[실제값 기준 CRC 4변형 — CONFIG_A_CRC_W=0 되는 것이 정답]\r\n" );
@@ -1731,7 +1732,7 @@ static int testHpvFunc(int argc, char *argv[])
 				crc=0xFFU;
 				for(i=0;i<n;i++){ crc^=buf[i]; for(k=0;k<8;k++){ crc = (crc&0x80U)?(UInt8)((crc<<1)^0x97U):(UInt8)(crc<<1);} }
 				for( t=0;t<3;t++ ){ (void)DRV3946_Write24( 0x16U, (UInt16)crc, &e ); }  /* A6=CRC, 위치실패 대비 3회 */
-				s1 = DRV3946_Read24( 0x02U, 0U, &e );
+				s1 = DRV3946_Read24( 0x02U, g_drvNode, &e );
 				printf( "  v%d(n=%d) crc=0x%02X -> STATUS1=0x%04X CONFIG_A_CRC_W=%u%s\r\n",
 				        v, n, (unsigned)crc, (unsigned)s1, (unsigned)((s1>>1)&1U),
 				        (((s1>>1)&1U)==0U)?"  <<<< 통과!":"" );
@@ -1889,36 +1890,36 @@ static int testHpvFunc(int argc, char *argv[])
             return(0);
         }
 
-        /* [정식] DRV3946 웨이크업+통신확인 : hpv init
-         * 데이터시트 시퀀스: tREADY 대기 -> REINIT_NAD(CMD2 B14) -> CLR_FAULT(CMD2 B15)
-         *   -> STATUS0(1h, 리셋0x2500)/STATUS1(2h, 리셋0x0803) 읽기.
-         * 판정: STATUS1 DEVICE_ID(b11:10)=0x2 면 SPI 통신 정상! 0xFFFF면 무응답(SDO Hi-Z). */
+        /* [정식] DRV3946 웨이크업+통신확인 : hpv init [node]
+         * CONFIG_A/B(+CRC) -> CLR_FAULT까지 수행해 CH2 EN2 pin config도 함께 보장한다. */
         if( !strcmp(argv[1], "INIT") )
         {
             extern void   DRV3946_SPI_Init( void );
-            extern UInt16 DRV3946_Cmd24( UInt8 hdr, UInt8 cmd, UInt8 *echo );
             extern UInt16 DRV3946_Read24( UInt8 reg5, UInt8 node2, UInt8 *echo );
-            UInt8  ec = 0, e0 = 0, e1 = 0;
-            UInt16 st0, st1;
+            extern UInt16 DRV3946_Wake( UInt16 *pS0 );
+            UInt8  e0 = 0, e1 = 0, e4 = 0;
+            UInt16 st0, st1, a4;
             unsigned did;
 
+            if( argc >= 3 ) g_drvNode = (UInt8)(htoi(argv[2]) & 0x3U);
             DRV3946_SPI_Init();
             SYSTICK_DelayMs( 3 );                         /* tREADY(max 1ms) 여유 */
-            (void)DRV3946_Cmd24( 0x3CU, 0x40U, &ec );     /* CMD2 REINIT_NAD (B14=0x40) */
+            st1 = DRV3946_Wake( &st0 );
             SYSTICK_DelayMs( 2 );
-            (void)DRV3946_Cmd24( 0x3CU, 0x80U, &ec );     /* CMD2 CLR_FAULT  (B15=0x80) */
-            SYSTICK_DelayMs( 2 );
-            st0 = DRV3946_Read24( 0x01U, 0U, &e0 );       /* STATUS0 */
-            st1 = DRV3946_Read24( 0x02U, 0U, &e1 );       /* STATUS1 */
+            st0 = DRV3946_Read24( 0x01U, g_drvNode, &e0 );       /* STATUS0 */
+            st1 = DRV3946_Read24( 0x02U, g_drvNode, &e1 );       /* STATUS1 */
+            a4 = DRV3946_Read24( DRV3946_CONFIG_A4_REG, g_drvNode, &e4 );
             did = (unsigned)((st1 >> 10) & 0x3U);
 
-            printf( "DRV3946 wake: REINIT_NAD + CLR_FAULT (CMD2 broadcast) sent\r\n" );
+            printf( "DRV3946 init[node%u]: full CONFIG_A/B wake + CLR_FAULT sent\r\n", (unsigned)g_drvNode );
             printf( "  STATUS0=0x%04X echo=0x%02X  [POR(b13)=%u nFLT(b10)=%u DEV_ERR(b9)=%u WARN(b8)=%u]\r\n",
                     (unsigned)st0, (unsigned)e0,
                     (unsigned)((st0>>13)&1U), (unsigned)((st0>>10)&1U),
                     (unsigned)((st0>>9)&1U),  (unsigned)((st0>>8)&1U) );
             printf( "  STATUS1=0x%04X echo=0x%02X  [DEVICE_ID=0x%X]\r\n",
                     (unsigned)st1, (unsigned)e1, did );
+            printf( "  CONFIG_A4=0x%04X echo=0x%02X  [expect 0x%04X for CH2 EN2]\r\n",
+                    (unsigned)a4, (unsigned)e4, (unsigned)DRV3946_CONFIG_A4_CH2_EN2_VALUE );
             printf( "  echo비트(B23..16): VDD_ERR(b7)=%u NAD_ERR(b6)=%u SPI_ERR(b5)=%u\r\n",
                     (unsigned)((e1>>7)&1U), (unsigned)((e1>>6)&1U), (unsigned)((e1>>5)&1U) );
             if( did == 0x2U )
