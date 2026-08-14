@@ -27,6 +27,7 @@
 | 전환 전략 | 단계적 cutover 후 legacy 완전 제거 |
 | 초기 RX 방식 | USART1 interrupt RX |
 | 무결성 | CSP CRC32 필수 |
+| RS485 송신 정책 | PSC는 OBC 요청에 대한 response로만 송신 |
 | 제외 기능 | RDP, HMAC, XTEA, multidrop, multi-master, 주기 telemetry push |
 
 ## 3. 기준 상태
@@ -88,7 +89,7 @@ STM32 HAL/DMA port는 복사하지 않는다. SAMV71 port는 대상 저장소가
 - 충돌 감지, arbitration, backoff
 - 초기 구현의 XDMAC RX
 - RDP/HMAC/XTEA 및 별도 애플리케이션 암호화
-- 주기적 telemetry push 또는 subscription
+- 주기적 telemetry push, subscription, 또는 PSC가 먼저 시작하는 RS485 송신
 - 통신 손실 시 자동 `EnterSafeState()` 호출
 - CSP와 무관한 application refactoring
 
@@ -248,12 +249,13 @@ csp-rs485 자체 static RAM은 stream storage, RX chunk, TX frame, task/TCB/sema
 ### 9.1 CSP transport contract
 
 - topology: node 1 ↔ node 2 point-to-point
+- OBC가 master이고 PSC는 responder다. PSC는 OBC request에 대한 response 외에는 RS485 packet을 시작하지 않는다.
 - requests와 responses 모두 CSP CRC32를 사용한다.
 - KISS frame 자체에 별도 checksum을 추가하지 않는다.
 - RDP를 사용하지 않는다.
 - libcsp 기본 service는 `CSP_PING`만 allowlist한다. Remote reboot와 그 밖의 표준 service는 v1에서 노출하지 않는다.
 - application packet 최대 길이는 66 bytes로 MTU 296보다 작다.
-- 서비스는 request/response 방식이며 unsolicited periodic telemetry를 보내지 않는다.
+- 서비스는 request/response 방식이며 unsolicited telemetry/debug/health packet을 보내지 않는다.
 
 ### 9.2 Service ports
 

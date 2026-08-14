@@ -16,6 +16,7 @@
 - csp-rs485 공통 파일은 upstream과 byte-identical 상태로 유지한다. SAMV71 전용 변경은 `sam_ctl.X/iGRVT50/source/csp` 아래에만 둔다.
 - csp-rs485 KISS interface가 packet마다 CRC32C를 직접 한 번 append/verify한다. libcsp connection에 `CSP_O_CRC32` 또는 `CSP_FCRC32`를 추가하면 CRC가 중복되므로 사용하지 않는다. 골든 벡터의 CSP header flags는 0이다.
 - 신규 wire code에서는 `UInt32`/`SInt32`를 쓰지 않고 `<stdint.h>`의 `uint*_t`/`int*_t`만 사용한다. native struct image, float, enum image, `__attribute__((packed))` 전송은 금지한다.
+- PSC는 OBC 요청에 대한 response로만 RS485 송신한다. CSP runtime/service/debug code는 주기 telemetry, spontaneous health/debug, PSC-originated ping, 또는 PSC-originated command packet을 만들지 않는다.
 - USART1 interrupt priority는 7로 유지하고 ISR에서는 blocking, allocation, KISS parsing, actuator 접근을 하지 않는다.
 - DE/nRE는 모든 실패 경로와 idle에서 `DE=0`, `nRE=0`이어야 한다.
 - production source 목록의 기준은 `sam_ctl.X/nbproject/configurations.xml`이다. `cmake/sam_ctl/default/.generated`는 MPLAB export 결과로만 갱신하고 직접 편집하지 않는다.
@@ -553,6 +554,7 @@ sam_csp_dispatch_action_t sam_csp_service_dispatch(
 - [ ] Write failing service tests for every port/opcode, short-header drop, exact BAD_* detail, fake domain OK/INVALID_STATE/APPLY_FAILED mapping, output immutability on decode failure, snapshot/health length, response-capacity failure, peer mismatch drop, `CSP_PING` delegation, and silent drop of all other libcsp reserved/unknown ports.
 - [ ] Implement the service task with `csp_socket(CSP_SO_NONE)`, `csp_bind(socket, CSP_ANY)`, and `csp_listen(socket, 10)`. Accept only node 2. Allocate a distinct response packet with `csp_buffer_get(0)`; free request and response on every unsent path; after successful `csp_send`, do not free the sent packet.
 - [ ] When the destination port is exactly `CSP_PING`, pass the original request packet once to `csp_service_handler(connection, packet)` and treat ownership as transferred. For every other libcsp reserved port, free the request without invoking the default handler so remote reboot and identification services remain unavailable.
+- [ ] Do not create any PSC-originated CSP traffic path. Service code may only send a packet on the accepted connection that carried an OBC request.
 - [ ] Maintain local service counters for malformed packets, allocation failures, send failures, rejected peers, and dropped ports. These are visible through USART0 `csp` debug output but are not added to the fixed 58-byte GET_HEALTH schema.
 - [ ] Implement runtime startup with the exact order below. Leave `conf.conn_dfl_so` at `CSP_O_NONE` because csp-rs485 KISS adds one CRC32C itself.
 
