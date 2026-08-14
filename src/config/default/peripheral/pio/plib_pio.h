@@ -72,6 +72,24 @@
 #define UART1_RX_Get()               ((PIOA_REGS->PIO_PDSR >> 21U) & 0x1U)
 #define UART1_RX_PIN                  PIO_PIN_PA21
 
+/*** Macros for UART1_DE pin ***/
+#define UART1_DE_Set()               (PIOA_REGS->PIO_SODR = ((uint32_t)1U<<22U))
+#define UART1_DE_Clear()             (PIOA_REGS->PIO_CODR = ((uint32_t)1U<<22U))
+#define UART1_DE_Toggle()            (PIOA_REGS->PIO_ODSR ^= ((uint32_t)1U<<22U))
+#define UART1_DE_OutputEnable()      (PIOA_REGS->PIO_OER = ((uint32_t)1U<<22U))
+#define UART1_DE_InputEnable()       (PIOA_REGS->PIO_ODR = ((uint32_t)1U<<22U))
+#define UART1_DE_Get()               ((PIOA_REGS->PIO_PDSR >> 22U) & 0x1U)
+#define UART1_DE_PIN                  PIO_PIN_PA22
+
+/*** Macros for UART1_nRE pin ***/
+#define UART1_nRE_Set()               (PIOA_REGS->PIO_SODR = ((uint32_t)1U<<24U))
+#define UART1_nRE_Clear()             (PIOA_REGS->PIO_CODR = ((uint32_t)1U<<24U))
+#define UART1_nRE_Toggle()            (PIOA_REGS->PIO_ODSR ^= ((uint32_t)1U<<24U))
+#define UART1_nRE_OutputEnable()      (PIOA_REGS->PIO_OER = ((uint32_t)1U<<24U))
+#define UART1_nRE_InputEnable()       (PIOA_REGS->PIO_ODR = ((uint32_t)1U<<24U))
+#define UART1_nRE_Get()               ((PIOA_REGS->PIO_PDSR >> 24U) & 0x1U)
+#define UART1_nRE_PIN                  PIO_PIN_PA24
+
 /*** Macros for XIN32_32K pin ***/
 #define XIN32_32K_Get()               ((PIOA_REGS->PIO_PDSR >> 7U) & 0x1U)
 #define XIN32_32K_PIN                  PIO_PIN_PA7

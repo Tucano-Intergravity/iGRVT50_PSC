@@ -43,6 +43,9 @@ void vApplicationIdleHook( void );
 void vApplicationTickHook( void );
 void vAssertCalled( const char * pcFile, unsigned long ulLine );
 
+static StaticTask_t xIdleTaskTCB;
+static StackType_t uxIdleTaskStack[configMINIMAL_STACK_SIZE];
+
 /*
 *********************************************************************************************************
 *                                          vApplicationStackOverflowHook()
@@ -122,6 +125,17 @@ void vApplicationMallocFailedHook( void )
        /* Do Nothing */
    }
 }
+/*-----------------------------------------------------------*/
+
+void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer,
+                                    StackType_t **ppxIdleTaskStackBuffer,
+                                    uint32_t *pulIdleTaskStackSize )
+{
+    *ppxIdleTaskTCBBuffer = &xIdleTaskTCB;
+    *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+    *pulIdleTaskStackSize = configMINIMAL_STACK_SIZE;
+}
+
 /*-----------------------------------------------------------*/
 
 void vApplicationIdleHook( void )
