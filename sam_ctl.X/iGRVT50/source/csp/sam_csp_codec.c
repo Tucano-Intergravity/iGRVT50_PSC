@@ -466,5 +466,7 @@ size_t SamCsp_EncodeHealthSnapshot(
         put_be32(&output[offset], snapshot->counters[i]);
         offset += 4U;
     }
+    put_be32(&output[offset], snapshot->thruster_fault_flags);
+    offset += 4U;
     return offset;
 }

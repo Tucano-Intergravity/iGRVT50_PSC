@@ -39,6 +39,14 @@ typedef enum PscPressureSensor {
     PSC_PT_C1 = 9U
 } ePscPressureSensor;
 
+typedef enum PscTemperatureSensor {
+    PSC_TC_O1 = 1U,
+    PSC_TC_O2 = 2U,
+    PSC_TC_F1 = 3U,
+    PSC_TC_C1 = 4U,
+    PSC_TC_CJC1 = 5U
+} ePscTemperatureSensor;
+
 #define PSC_IO_INDEX(channel)      ((unsigned int)((channel) - 1U))
 #define PSC_IO_MASK(channel)       (1UL << PSC_IO_INDEX(channel))
 

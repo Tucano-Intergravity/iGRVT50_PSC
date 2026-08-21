@@ -277,6 +277,12 @@ sam_csp_domain_result_t SamCspDomain_SetSimSensors(
     return SAM_CSP_DOMAIN_OK;
 }
 
+sam_csp_domain_result_t SamCspDomain_ClearFaults(void)
+{
+    Opu_ClearThrusterFaults();
+    return SAM_CSP_DOMAIN_OK;
+}
+
 sam_csp_domain_result_t SamCspDomain_GetSensorSnapshot(
     sam_csp_sensor_snapshot_t *snapshot)
 {

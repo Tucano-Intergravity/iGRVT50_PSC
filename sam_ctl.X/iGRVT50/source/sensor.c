@@ -9,7 +9,13 @@
 #define SENSOR_PT_FULL_SCALE_BAR 100.0f
 #define SENSOR_PT_C1_FULL_SCALE_BAR 16.0f
 #define SENSOR_PT_MILLIBAR_PER_BAR 1000.0f
+#define SENSOR_PT_DIVIDER_TOP_OHM 20000.0f
+#define SENSOR_PT_DIVIDER_BOTTOM_OHM (78700.0f / 2.0f)
+#define SENSOR_PT_FRONTEND_GAIN \
+    ((SENSOR_PT_DIVIDER_TOP_OHM + SENSOR_PT_DIVIDER_BOTTOM_OHM) / \
+     SENSOR_PT_DIVIDER_BOTTOM_OHM)
 #define SENSOR_KELVIN_OFFSET_C      273.15f
+#define SENSOR_TC_VALID_MAX_MK      2500000L
 
 static volatile UInt16 s_ptRawAdc[SENSOR_PT_CHANNEL_COUNT] = { 0U };
 static volatile UInt32 s_ptScanCount = 0U;
@@ -42,6 +48,11 @@ static SInt32 Sensor_ConvertPtMilliVoltToMilliBar( SInt32 millivolt, UInt8 index
     pressureBar = (((float)millivolt - SENSOR_PT_ZERO_MV) *
         Sensor_GetPtFullScaleBar( index )) / SENSOR_PT_SPAN_MV;
     return Sensor_RoundToSInt32( pressureBar * SENSOR_PT_MILLIBAR_PER_BAR );
+}
+
+static SInt32 Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt( SInt32 adcMilliVolt )
+{
+    return Sensor_RoundToSInt32( (float)adcMilliVolt * SENSOR_PT_FRONTEND_GAIN );
 }
 
 static SInt32 Sensor_ConvertPtMilliBarToMilliVolt( SInt32 milliBar, UInt8 index )
@@ -215,7 +226,8 @@ void SensorOverride_StartFromCurrent( void )
     for( i = 0U; i < SENSOR_PT_CHANNEL_COUNT; i++ )
     {
         raw = s_ptRawAdc[i];
-        milliVolt = Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f );
+        milliVolt = Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
+            Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ) );
         s_overridePtMilliBar[i] = Sensor_ConvertPtMilliVoltToMilliBar( milliVolt, i );
     }
 
@@ -267,7 +279,8 @@ void SensorOverride_SetValues( const SInt32 *pPtMilliBar,
         for( i = 0U; i < tcCount; i++ )
         {
             s_overrideTcMilliKelvin[i] = pTcMilliKelvin[i];
-            if( pTcMilliKelvin[i] > 0 )
+            if( (pTcMilliKelvin[i] > 0) &&
+                (pTcMilliKelvin[i] <= SENSOR_TC_VALID_MAX_MK) )
             {
                 validMask |= (UInt16)(1U << i);
             }
@@ -305,7 +318,7 @@ float Sensor_GetPtAdcVoltage( UInt8 ch )
     {
         return (float)Sensor_ConvertPtMilliBarToMilliVolt( s_overridePtMilliBar[idx], idx ) / 1000.0f;
     }
-    return AFEC_ToVoltage( Sensor_GetPtRawAdc( ch ) );
+    return (float)Sensor_GetPtAdcMilliVolt( ch ) / 1000.0f;
 }
 
 SInt32 Sensor_GetPtAdcMilliVolt( UInt8 ch )
@@ -316,7 +329,9 @@ SInt32 Sensor_GetPtAdcMilliVolt( UInt8 ch )
     {
         return Sensor_ConvertPtMilliBarToMilliVolt( s_overridePtMilliBar[idx], idx );
     }
-    return Sensor_RoundToSInt32( Sensor_GetPtAdcVoltage( ch ) * 1000.0f );
+    return Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
+        Sensor_RoundToSInt32( AFEC_ToVoltage( Sensor_GetPtRawAdc( ch ) ) *
+                              1000.0f ) );
 }
 
 SInt32 Sensor_GetPtPressureMilliBar( UInt8 ch )
@@ -353,8 +368,9 @@ void Sensor_GetPtScan( sSensorPtScan *pScan )
         }
         raw = s_ptRawAdc[i];
         pScan->rawAdc[i] = raw;
-        pScan->adcVoltage[i] = AFEC_ToVoltage( raw );
-        pScan->adcMilliVolt[i] = Sensor_RoundToSInt32( pScan->adcVoltage[i] * 1000.0f );
+        pScan->adcMilliVolt[i] = Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
+            Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ) );
+        pScan->adcVoltage[i] = (float)pScan->adcMilliVolt[i] / 1000.0f;
         pScan->pressureMilliBar[i] =
             Sensor_ConvertPtMilliVoltToMilliBar( pScan->adcMilliVolt[i], i );
     }

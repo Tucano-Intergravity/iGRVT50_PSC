@@ -1,6 +1,6 @@
 # PSC CSP 작업 진행 요약
 
-- 작성 시각: 2026-08-21 15:06 KST
+- 작성 시각: 2026-08-21 18:44 KST
 - 작업 브랜치: `PSC_CSP`
 - 원격 저장소: `origin` / `https://github.com/Tucano-Intergravity/iGRVT50_PSC.git`
 - 기준: 현재 `C:\PSC\SAM_CTL_Control - IO` 작업 트리
@@ -38,15 +38,16 @@
   - `0x07 SET_SIM_SENSOR_VALUES`
   - `0x08 SIM_START`
   - `0x09 SIM_STOP`
+  - `0x0A FAULT_CLEAR`
 - Telemetry opcode:
   - `0x01 GET_SENSOR_SNAPSHOT`
   - `0x02 GET_SOLVALVE_STATE`
 - Diagnostics opcode:
   - `0x01 GET_HEALTH`
 - `SET_OUTPUTS`, `SET_LPV_OUTPUTS`, `SET_SIM_SENSOR_VALUES` 성공 응답은 센서 스냅샷 TM으로 통일했다.
-- 센서 스냅샷에는 PT raw mV, PT 변환 압력 mbar, TC raw uV, TC 변환 온도 mK가 함께 포함된다.
+- 센서 스냅샷에는 PT sensor-output mV, PT 변환 압력 mbar, TC raw uV, TC 변환 온도 mK가 함께 포함된다.
 - SV 상태 TM은 LPV/HPV/Heater/SP on mask를 반환한다.
-- Health TM은 모드, link/error 상태, debug message queue, CSP/RS485 카운터를 반환한다.
+- Health TM은 모드, link/error 상태, debug message queue, CSP/RS485 카운터, thruster fault flags를 반환한다.
 
 ## 4. 출력 제어와 물리 명칭 매핑
 
@@ -61,6 +62,12 @@
   - `PT-O1` ~ `PT-O4`
   - `PT-F1` ~ `PT-F4`
   - `PT-C1`
+- Temperature sensor 매핑:
+  - `TC-O1=TC1`
+  - `TC-O2=TC2`
+  - `TC-F1=TC3`
+  - `TC-C1=TC4`
+  - `CJC1=10 kOhm NTC / AIN8-9`
 - Heater/SP:
   - Heater는 HTR1~4만 유지한다.
   - SP는 PC5 GPIO ON/OFF 제어로 유지하며 PWM을 사용하지 않는다.
@@ -93,6 +100,24 @@
   - `ThrusterEmergency_RunMonitor()`
 - Pre-run check 호출 시 debug message를 남긴다.
 - Run monitor debug message는 1 Hz로 제한했다.
+- Run monitor fault 판정 구간은 `3.25 s ~ 20.25 s`이다.
+- Thruster fault bit는 clear 전까지 latch 유지한다.
+- Fault 감지 시 `SV-O3`, `SV-F3`, `SP`를 즉시 OFF하고, Thruster active를 해제한 뒤 Normal mode로 복귀한다.
+- Latched fault가 남아 있으면 다음 Thruster Start pre-run check에서 차단한다.
+- Fault clear TC:
+  - Command port opcode `0x0A FAULT_CLEAR`
+- Health TM fault flags:
+  - `THRUSTER_FAULT_PT_C1_HH = 0x00000001`
+  - `THRUSTER_FAULT_PT_C1_LL = 0x00000002`
+  - `THRUSTER_FAULT_TT_C1_HH = 0x00000004`
+  - `THRUSTER_FAULT_PT_C1_INVALID = 0x00000008`
+  - `THRUSTER_FAULT_TT_C1_INVALID = 0x00000010`
+- 현재 fault 기준:
+  - `PT-C1 HH`: `> 7.8 bar`
+  - `PT-C1 LL`: `< 3.0 bar`
+  - `PT-C1 INVALID`: scan 없음 또는 보정 압력 `-0.5 ~ 17.0 bar` 범위 밖
+  - `TT-C1 HH`: `> 1200 K`
+  - `TT-C1 INVALID`: temperature scan 없음, validMask 미설정, `<= 0 K`, 또는 `> 2500 K`
 
 ## 7. PAR 제어
 
@@ -108,6 +133,14 @@
 
 ## 8. 센서 변환
 
+- PT 입력 회로는 5 V 센서 출력을 3.3 V ADC 범위로 낮추는 감쇄 네트워크가 있다.
+- 회로도 기준 PT 감쇄:
+  - `PRES_SIGx -> 20 kOhm -> buffer input node`
+  - `buffer input node -> 78.7 kOhm || 78.7 kOhm -> AGND`
+  - `Rdown = 39.35 kOhm`
+  - `Vadc = Vsensor * 39.35 / (20 + 39.35) = Vsensor * 0.663016`
+  - `Vsensor = Vadc * 1.50826`
+- Firmware의 PT mV TM과 압력 변환은 sensor output 기준 전압으로 환산한 뒤 적용한다.
 - PT 변환식을 적용했다:
   - 일반 PT: `0.5 V -> 0 bar`, `4.5 V -> 100 bar`
   - `PT-C1`: `0.5 V -> 0 bar`, `4.5 V -> 16 bar`
@@ -140,6 +173,8 @@
 - PAR pressure sensor selector UI를 추가했다.
 - SIM START / SET SIM SENSORS / SIM STOP UI를 추가했다.
 - CSP Ping / Reset 버튼을 추가했다.
+- Status 영역에 fault flags 표시를 추가했다.
+- Fault Clear 버튼을 추가했다.
 
 ## 11. 최근 검증 상태
 

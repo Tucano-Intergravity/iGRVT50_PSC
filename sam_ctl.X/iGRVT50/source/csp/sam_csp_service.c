@@ -13,6 +13,7 @@
 #include "csp/sam_csp_config.h"
 #include "csp/sam_csp_domain.h"
 #include "csp/sam_csp_protocol.h"
+#include "sam_ctl.h"
 #include "statemachine.h"
 
 static csp_socket_t *s_socket = NULL;
@@ -306,6 +307,29 @@ static sam_csp_dispatch_action_t handle_command(
                 response_length);
         }
 
+        case SAM_CSP_OPCODE_FAULT_CLEAR: {
+            uint16_t transaction_id;
+            status = SamCsp_DecodeHeader(
+                request,
+                request_length,
+                request[1],
+                SAM_CSP_FAULT_CLEAR_REQUEST_LENGTH,
+                &transaction_id,
+                &detail);
+            (void)transaction_id;
+            if (status == SAM_CSP_STATUS_OK) {
+                domain_result = SamCspDomain_ClearFaults();
+                status = domain_status(domain_result, &detail);
+            }
+            return encode_status_response(
+                request,
+                status,
+                detail,
+                response,
+                response_capacity,
+                response_length);
+        }
+
         default:
             return encode_status_response(
                 request,
@@ -466,6 +490,7 @@ static sam_csp_dispatch_action_t handle_health(
     snapshot.counters[8] = link_health.recovery_attempts;
     snapshot.counters[9] = link_health.recovery_successes;
     snapshot.counters[10] = link_health.recovery_failures;
+    snapshot.thruster_fault_flags = (uint32_t)Opu_GetThrusterFaultFlags();
 
     *response_length = SamCsp_EncodeHealthSnapshot(
         request[1],

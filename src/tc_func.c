@@ -367,10 +367,10 @@ static uint8_t s_tcBypass = 1U;   /* [확정] 1=PGA bypass(gain1,rail-to-rail) �
                                    *  bypass는 입력 rail-to-rail이라 정상 차동 측정됨 (-19mV->-2.9mV 검증) */
 
 /* [TC 0점] 채널별 잔류 offset(mV). 쇼트 입력에서 tczero로 캡처 -> 측정값에서 뺌. */
-static float   s_tcOffmV[2][4] = { {0,0,0,0}, {0,0,0,0} };   /* ADS#1=4ch(SEN1~4), ADS#2=2ch(SEN5~6) */
+static float   s_tcOffmV[2][4] = { {0,0,0,0}, {0,0,0,0} };   /* ADS#1=TC-O1/TC-O2/TC-F1/TC-C1, ADS#2=legacy */
 static float   s_curTcOffmV    = 0.0f;   /* GetTemperature가 변환 직전 설정 */
 
-/* [진단] 채널별 마지막 raw ADC code (CH0~3=TC1~4, CH4=CJC1/AIN8-9). 0xFFFFFFFF=SPI 무응답(칩 DOUT high-Z),
+/* [진단] 채널별 마지막 raw ADC code (CH0~3=TC-O1/TC-O2/TC-F1/TC-C1, CH4=CJC1/AIN8-9). 0xFFFFFFFF=SPI 무응답(칩 DOUT high-Z),
  * 0x00000000=리드불가. 정상 변환이면 의미있는 32bit 값. 운영 TcPrint에서 hex로 노출. */
 static int32_t s_tcRawCode[2][5] = { {0,0,0,0,0}, {0,0,0,0,0} };
 int32_t ADS1263_GetRawCode( UInt8 dev, UInt8 ch ) { return s_tcRawCode[(dev==2)?1:0][(ch>4U)?4U:ch]; }

@@ -26,6 +26,7 @@ sam_csp_domain_result_t SamCspDomain_StartSim(void);
 sam_csp_domain_result_t SamCspDomain_StopSim(void);
 sam_csp_domain_result_t SamCspDomain_SetSimSensors(
     const sam_csp_set_sim_sensor_request_t *request);
+sam_csp_domain_result_t SamCspDomain_ClearFaults(void);
 sam_csp_domain_result_t SamCspDomain_GetSensorSnapshot(
     sam_csp_sensor_snapshot_t *snapshot);
 sam_csp_domain_result_t SamCspDomain_GetSolvalveSnapshot(

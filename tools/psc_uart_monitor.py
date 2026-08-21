@@ -3,7 +3,7 @@
 Simple UART monitor for PSC iGRVT50 sensor packets.
 
 Packet format:
-    $iGRVT50,<tick>,<PT1 mV>...<PT9 mV>,<TC1 uV>...<TC4 uV>\r\n
+    $iGRVT50,<tick>,<PT1 mV>...<PT9 mV>,<TC-O1 uV>,<TC-O2 uV>,<TC-F1 uV>,<TC-C1 uV>\r\n
 """
 
 from __future__ import annotations

@@ -490,10 +490,10 @@ static int testTcModeFunc(int argc, char *argv[])
 /* [디버그] ADS1263 ID 레지스터(0x00) 읽기 -> SPI 링크 HW/FW 판정
  * 정상이면 상위3비트=001 -> 0x20~0x3F. 0x00/0xFF면 통신 끊김(HW) */
 extern UInt8 ADS1263_DbgReadReg( UInt8 dev, UInt8 reg );
-/* [검증] TC 채널 raw 차동전압(mV): tcraw <1~6> (1~3=ADS#1 TC1~3, 4~6=ADS#2 TC1~3)
+/* [검증] TC 채널 raw 차동전압(mV): tcraw <1~6> (1~4=TC-O1/TC-O2/TC-F1/TC-C1)
  * 쇼트접점 상온 ≈ 0mV, 접점 가열하면 상승(Type-K ≈ 41µV/°C) -> 열전대/ADC 정상 확인 */
 /* [회로도 확정] TC 채널 1~6 -> {dev, AINp, AINm}
- *  U17(ADS#1): SEN1=AIN0/1, SEN2=AIN2/3, SEN3=AIN4/5, SEN4=AIN6/7  (4개)
+ *  U17(ADS#1): TC-O1=AIN0/1, TC-O2=AIN2/3, TC-F1=AIN4/5, TC-C1=AIN6/7  (4개)
  *  U18(ADS#2): SEN5=AIN0/1, SEN6=AIN2/3                            (2개) */
 static const uint8_t g_tcCh[6][3] = {
 	{1U,0U,1U}, {1U,2U,3U}, {1U,4U,5U}, {1U,6U,7U}, {2U,0U,1U}, {2U,2U,3U}
@@ -509,7 +509,7 @@ static int testTcRawFunc(int argc, char *argv[])
 	float   mv;
 	if( argc < 2 )
 	{
-		printf("usage: tcraw <1~6>  (1~4=ADS#1 SEN1~4, 5~6=ADS#2 SEN5~6)\r\n");
+		printf("usage: tcraw <1~6>  (1=TC-O1, 2=TC-O2, 3=TC-F1, 4=TC-C1, 5~6=ADS#2 legacy)\r\n");
 		printf("       tcraw <dev1|2> <AINp> <AINm>  (자유 페어)\r\n");
 		return(0);
 	}
@@ -1279,21 +1279,18 @@ static int testPtFunc(int argc, char *argv[])
 	return(0);
 }
 
-/* [검증] 온도 6ch (사양: TT-F1~F3, TT-O1~O3 / K-Type)
- * 매핑: TT-F1~F3=ADS#1 Ch1~3, TT-O1~O3=ADS#2 Ch1~3 (+CJ 냉접점)  ※보드태그와 대조요
+/* [검증] 온도 4ch (TC-O1/TC-O2/TC-F1/TC-C1 / K-Type)
+ * 매핑: TC-O1=ADS#1 Ch1, TC-O2=ADS#1 Ch2, TC-F1=ADS#1 Ch3, TC-C1=ADS#1 Ch4 (+CJC1)
  * 주의: 열전대 미연결(오픈)이면 값 큰/ nan 정상. 실제 TC 연결 후 의미있음. */
 static int testTtFunc(int argc, char *argv[])
 {
 	extern sTcTemp stTcTemp[2];
 	(void)argc; (void)argv;
-	printf( "[Temperature] K-Type Thermocouple x6 (deg C)\r\n" );
-	printf( "  ADS#1  SEN1:%7.2f  SEN2:%7.2f  SEN3:%7.2f  SEN4:%7.2f   [CJ1:%7.2f]\r\n",
+	printf( "[Temperature] K-Type Thermocouple x4 (deg C)\r\n" );
+	printf( "  TC-O1:%7.2f  TC-O2:%7.2f  TC-F1:%7.2f  TC-C1:%7.2f   [CJC1:%7.2f]\r\n",
 	        (double)stTcTemp[0].fTempCh1, (double)stTcTemp[0].fTempCh2,
 	        (double)stTcTemp[0].fTempCh3, (double)stTcTemp[0].fTempCh4,
 	        (double)stTcTemp[0].fTempCJ );
-	printf( "  ADS#2  SEN5:%7.2f  SEN6:%7.2f                            [CJ2:%7.2f]\r\n",
-	        (double)stTcTemp[1].fTempCh1, (double)stTcTemp[1].fTempCh2,
-	        (double)stTcTemp[1].fTempCJ );
 	return(0);
 }
 
@@ -2333,7 +2330,7 @@ static void UsrCmdList(void)
     UsrCmdSet( "csp",  testCspFunc,   "CSP RS485 responder status",'N',"\0");
     UsrCmdSet( "safe", testSafeFunc,  "EMERGENCY: all actuators OFF (HP/micro/heater)",'N',"\0");
     UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-O1~O4/F1~F4/C1 (0.5~4.5V, %FS)",'N',"\0");
-    UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TT-F1~F3/O1~O3 (K-type, degC)",'N',"\0");
+    UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TC-O1/O2/F1/C1 (K-type, degC)",'N',"\0");
     UsrCmdSet( "hpv",  testHpvFunc,   "HP valve: hpv <1-8> [f] | cycle on/off | node/wake/on/off/stat/init",'N',"\0");
     UsrCmdSet( "off",  testOffFunc,   "ALL OFF (HP 8 + LP 12 + Heater 4 + SP)",'N',"\0");
     UsrCmdSet( "lpv",  testLpvFunc,   "LP valve PWM/cycle: lpv <1-12> <0-100> | cycle on/off",'N',"\0");

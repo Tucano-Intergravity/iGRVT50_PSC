@@ -20,6 +20,7 @@
 #define SAM_CSP_OPCODE_SET_SIM_SENSOR_VALUES  0x07U
 #define SAM_CSP_OPCODE_SIM_START              0x08U
 #define SAM_CSP_OPCODE_SIM_STOP               0x09U
+#define SAM_CSP_OPCODE_FAULT_CLEAR            0x0AU
 
 #define SAM_CSP_OPCODE_GET_SENSOR_SNAPSHOT    0x01U
 #define SAM_CSP_OPCODE_GET_SOLVALVE_STATE     0x02U
@@ -33,6 +34,7 @@
 #define SAM_CSP_SET_LPV_OUTPUTS_REQUEST_LENGTH 6U
 #define SAM_CSP_SET_SIM_SENSOR_REQUEST_LENGTH 60U
 #define SAM_CSP_SIM_REQUEST_LENGTH            4U
+#define SAM_CSP_FAULT_CLEAR_REQUEST_LENGTH    4U
 #define SAM_CSP_SENSOR_REQUEST_LENGTH         4U
 #define SAM_CSP_SOLVALVE_REQUEST_LENGTH       4U
 #define SAM_CSP_HEALTH_REQUEST_LENGTH         4U
@@ -40,7 +42,7 @@
 #define SAM_CSP_SENSOR_RESPONSE_LENGTH        126U
 #define SAM_CSP_SOLVALVE_RESPONSE_LENGTH      16U
 #define SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES     4U
-#define SAM_CSP_HEALTH_RESPONSE_LENGTH        106U
+#define SAM_CSP_HEALTH_RESPONSE_LENGTH        110U
 
 #define SAM_CSP_LPV_VALID_MASK                0x0FFFU
 #define SAM_CSP_HEATER_VALID_MASK             0x0FU
@@ -138,6 +140,7 @@ typedef struct {
     uint8_t debug_count;
     sam_csp_debug_message_t debug_messages[SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES];
     uint32_t counters[11];
+    uint32_t thruster_fault_flags;
 } sam_csp_health_snapshot_t;
 
 sam_csp_status_t SamCsp_DecodeHeader(

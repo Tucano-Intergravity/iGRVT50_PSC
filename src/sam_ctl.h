@@ -43,6 +43,13 @@ typedef void (*OpuTimerCallback)( void *context );
 #define OPU_DEBUG_PAR_EVENT_START            1U
 #define OPU_DEBUG_PAR_EVENT_STOP             2U
 
+#define THRUSTER_FAULT_NONE                  0x00000000UL
+#define THRUSTER_FAULT_PT_C1_HH              0x00000001UL
+#define THRUSTER_FAULT_PT_C1_LL              0x00000002UL
+#define THRUSTER_FAULT_TT_C1_HH              0x00000004UL
+#define THRUSTER_FAULT_PT_C1_INVALID         0x00000008UL
+#define THRUSTER_FAULT_TT_C1_INVALID         0x00000010UL
+
 typedef struct OpuDebugMessage {
     UInt32 sequence;
     UInt32 elapsedMs;
@@ -88,6 +95,8 @@ extern UInt8 OpuTimer_RegisterCallback( UInt32 periodMs, OpuTimerCallback callba
 extern UInt8 Opu_RequestThrusterStart( const sThrusterStartParams *params );
 extern UInt8 Opu_RequestParStart( const sParStartParams *params );
 extern UInt8 Opu_RequestParStop( void );
+extern UInt32 Opu_GetThrusterFaultFlags( void );
+extern void Opu_ClearThrusterFaults( void );
 extern UInt8 OpuDebug_PopMessage( sOpuDebugMessage *message );
 extern void OpuDebug_ClearMessages( void );
 

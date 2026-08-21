@@ -60,6 +60,7 @@ OP_SET_LPV_OUTPUTS = 0x06
 OP_SET_SIM_SENSOR_VALUES = 0x07
 OP_SIM_START = 0x08
 OP_SIM_STOP = 0x09
+OP_FAULT_CLEAR = 0x0A
 OP_GET_SENSOR_SNAPSHOT = 0x01
 OP_GET_SOLVALVE_STATE = 0x02
 OP_GET_HEALTH = 0x01
@@ -112,17 +113,25 @@ HPV_LABELS = (
     "SPARE\nHPV8",
 )
 TC_LABELS = (
-    "TC1\nAIN0/1",
-    "TC2\nAIN2/3",
-    "TC3\nAIN4/5",
-    "TC4\nAIN6/7",
+    "TC-O1\nTC1 AIN0/1",
+    "TC-O2\nTC2 AIN2/3",
+    "TC-F1\nTC3 AIN4/5",
+    "TC-C1\nTC4 AIN6/7",
     "CJC1 10k NTC\nAIN8/9",
 )
 
 SENSOR_RESPONSE_LENGTH = 126
 SOLVALVE_RESPONSE_LENGTH = 16
 HEALTH_DEBUG_MAX_MESSAGES = 4
-HEALTH_RESPONSE_LENGTH = 106
+HEALTH_RESPONSE_LENGTH = 110
+
+THRUSTER_FAULTS = (
+    (0x00000001, "PT-C1_HH"),
+    (0x00000002, "PT-C1_LL"),
+    (0x00000004, "TT-C1_HH"),
+    (0x00000008, "PT-C1_INVALID"),
+    (0x00000010, "TT-C1_INVALID"),
+)
 
 KISS_FEND = 0xC0
 KISS_FESC = 0xDB
@@ -189,6 +198,7 @@ class HealthPacket:
     last_error: int
     debug_messages: list[DebugMessage]
     counters: list[int]
+    thruster_fault_flags: int
 
 
 @dataclass
@@ -303,6 +313,19 @@ def mode_text(mode: int) -> str:
     return MODE_NAMES.get(mode, "unknown")
 
 
+def fault_flags_text(flags: int) -> str:
+    if flags == 0:
+        return "NONE"
+    names = [name for mask, name in THRUSTER_FAULTS if flags & mask]
+    known_mask = 0
+    for mask, _ in THRUSTER_FAULTS:
+        known_mask |= mask
+    unknown = flags & ~known_mask
+    if unknown:
+        names.append(f"UNKNOWN_0x{unknown:08X}")
+    return "|".join(names)
+
+
 def debug_source_text(source: int) -> str:
     return {
         1: "THRUSTER",
@@ -325,6 +348,11 @@ def debug_event_text(source: int, event: int) -> str:
         return {
             0: "PRE_RUN_CHECK",
             1: "RUN_MONITOR_1HZ",
+            2: "FAULT_PT-C1_HH",
+            3: "FAULT_PT-C1_LL",
+            4: "FAULT_TT-C1_HH",
+            5: "FAULT_PT-C1_INVALID",
+            6: "FAULT_TT-C1_INVALID",
         }.get(event, f"EVENT_{event}")
     if source == 3:
         return {
@@ -463,6 +491,8 @@ def parse_health_response(payload: bytes, transaction_id: int) -> tuple[int, int
                 )
             )
     counters = list(struct.unpack_from(">11I", payload, offset))
+    offset += 4 * 11
+    thruster_fault_flags = struct.unpack_from(">I", payload, offset)[0]
     return status, detail, HealthPacket(
         uptime_ms=uptime_ms,
         current_mode=current_mode,
@@ -470,6 +500,7 @@ def parse_health_response(payload: bytes, transaction_id: int) -> tuple[int, int
         last_error=last_error,
         debug_messages=debug_messages,
         counters=counters,
+        thruster_fault_flags=thruster_fault_flags,
     )
 
 
@@ -643,6 +674,7 @@ class PscCspMonitorApp(tk.Tk):
         self.last_update_var = tk.StringVar(value="-")
         self.age_var = tk.StringVar(value="-")
         self.health_var = tk.StringVar(value="-")
+        self.fault_var = tk.StringVar(value="NONE")
         self.sensor_source_var = tk.StringVar(value="REAL")
         self.auto_health_poll_var = tk.IntVar(value=1)
 
@@ -718,7 +750,7 @@ class PscCspMonitorApp(tk.Tk):
 
         status = ttk.LabelFrame(content, text="Status")
         status.grid(row=1, column=0, padx=12, pady=6, sticky="ew")
-        for col in range(11):
+        for col in range(12):
             status.columnconfigure(col, weight=1)
         self._add_status_item(status, 0, "Status", self.status_var)
         self._add_status_item(status, 1, "Tick", self.tick_var)
@@ -731,14 +763,18 @@ class PscCspMonitorApp(tk.Tk):
         self._add_status_item(status, 8, "Last Update", self.last_update_var)
         self._add_status_item(status, 9, "Age", self.age_var)
         self._add_status_item(status, 10, "Sensor Src", self.sensor_source_var)
+        self._add_status_item(status, 11, "Fault", self.fault_var)
 
         status_request_frame = ttk.Frame(status)
-        status_request_frame.grid(row=1, column=0, columnspan=11, padx=6, pady=(2, 6), sticky="ew")
+        status_request_frame.grid(row=1, column=0, columnspan=12, padx=6, pady=(2, 6), sticky="ew")
         status_request_frame.columnconfigure(0, weight=1)
+        status_request_frame.columnconfigure(1, weight=1)
         self.request_health_button = ttk.Button(status_request_frame, text="Health", command=self.send_health_req, state="disabled")
         self.request_health_button.grid(row=0, column=0, padx=(0, 6), sticky="ew")
+        self.fault_clear_button = ttk.Button(status_request_frame, text="Fault Clear", command=self.send_fault_clear, state="disabled")
+        self.fault_clear_button.grid(row=0, column=1, padx=6, sticky="ew")
         self.auto_health_check = ttk.Checkbutton(status_request_frame, text="Auto 1Hz", variable=self.auto_health_poll_var)
-        self.auto_health_check.grid(row=0, column=1, padx=(6, 0), sticky="w")
+        self.auto_health_check.grid(row=0, column=2, padx=(6, 0), sticky="w")
 
         values = ttk.Frame(content)
         values.grid(row=2, column=0, padx=12, pady=6, sticky="ew")
@@ -1320,6 +1356,9 @@ class PscCspMonitorApp(tk.Tk):
     def send_health_req(self) -> None:
         self._start_request("GET_HEALTH", CSP_PORT_DIAGNOSTICS, OP_GET_HEALTH, b"", "health")
 
+    def send_fault_clear(self) -> None:
+        self._start_request("FAULT_CLEAR", CSP_PORT_COMMAND, OP_FAULT_CLEAR, b"", "status")
+
     def send_csp_ping(self) -> None:
         self._start_standard_request("CSP_PING", CSP_PORT_PING, CSP_PING_PAYLOAD, "ping")
 
@@ -1649,6 +1688,7 @@ class PscCspMonitorApp(tk.Tk):
         self.current_mode_value = packet.current_mode
         self.tm_mode_var.set(mode_text(packet.current_mode))
         self.health_var.set(f"L{packet.link_state}/E{packet.last_error}")
+        self.fault_var.set(fault_flags_text(packet.thruster_fault_flags))
         for debug in packet.debug_messages:
             self._log(
                 f"DEBUG #{debug.debug_sequence} "
@@ -1673,7 +1713,8 @@ class PscCspMonitorApp(tk.Tk):
         if log_health:
             self._log(
                 f"Health uptime={packet.uptime_ms}ms mode={mode_text(packet.current_mode)} link={packet.link_state} "
-                f"last_error={packet.last_error} {counters}"
+                f"last_error={packet.last_error} fault={fault_flags_text(packet.thruster_fault_flags)}"
+                f"(0x{packet.thruster_fault_flags:08X}) {counters}"
             )
 
     def _handle_tx(self, request: TxRequest) -> None:
@@ -1738,6 +1779,7 @@ class PscCspMonitorApp(tk.Tk):
         self.request_sensor_tm_button.configure(state="normal" if command_ready else "disabled")
         self.request_sv_tm_button.configure(state="normal" if command_ready else "disabled")
         self.request_health_button.configure(state="normal" if command_ready else "disabled")
+        self.fault_clear_button.configure(state="normal" if command_ready else "disabled")
         self.ping_button.configure(state="normal" if command_ready else "disabled")
         self.reboot_button.configure(state="normal" if command_ready else "disabled")
         self.send_command_button.configure(state="normal" if command_ready else "disabled")

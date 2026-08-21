@@ -61,10 +61,10 @@ static float s_isenseApv  = 10.0f;
 void OpuSetIsenseCal( float offV, float apv ) { s_isenseOffV = offV; s_isenseApv = apv; }
 void OpuGetIsenseCal( float *offV, float *apv ) { if(offV){*offV=s_isenseOffV;} if(apv){*apv=s_isenseApv;} }
 
-/* [압력 게인 보정] 표시값 = 핀전압 × s_presGain (앞단 amp 보상). pcal 명령으로 런타임 보정.
- * 기본값 = 직접주입 1~5V 스윕 실측보정(2026-06-18, 신IO보드). 선형구간(1~4.5V) 표시/주입=0.840 -> gain=1.2044/0.840.
- * 1~4.5V 1:1 검증(4.5V->핀3.14V, 3.3Vref 내). 5V는 핀포화(센서4.5Vmax라 무관). (분배저항 교체 시 재보정 필요) */
-static float s_presGain = 1.4338f;
+/* [압력 게인 보정] 표시값 = ADC 핀전압 × s_presGain.
+ * 회로도: PRES_SIG -> 20k -> ADC buffer node, node -> 78.7k||78.7k -> AGND.
+ * ADC node = sensor output * 0.663016, so sensor output = ADC node * 1.50826. */
+static float s_presGain = 1.50826f;
 void  OpuSetPresGain( float g ) { if( (g>0.1f) && (g<3.0f) ) { s_presGain = g; } }
 float OpuGetPresGain( void )    { return s_presGain; }
 
@@ -88,9 +88,14 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define THRDBG_EVENT_SV_O3_OFF      4U
 #define THRDBG_EVENT_SP_OFF         5U
 #define THRDBG_EVENT_COUNT          6U
-#define THREMGDBG_EVENT_PRE_RUN_CHECK 0U
-#define THREMGDBG_EVENT_RUN_MONITOR   1U
-#define THREMGDBG_EVENT_COUNT         2U
+#define THREMGDBG_EVENT_PRE_RUN_CHECK    0U
+#define THREMGDBG_EVENT_RUN_MONITOR      1U
+#define THREMGDBG_EVENT_FAULT_PT_C1_HH   2U
+#define THREMGDBG_EVENT_FAULT_PT_C1_LL   3U
+#define THREMGDBG_EVENT_FAULT_TT_C1_HH   4U
+#define THREMGDBG_EVENT_FAULT_PT_C1_INV  5U
+#define THREMGDBG_EVENT_FAULT_TT_C1_INV  6U
+#define THREMGDBG_EVENT_COUNT            7U
 #define OPU_DEBUG_QUEUE_DEPTH         16U
 #define TC_TASK_PRIORITY            (tskIDLE_PRIORITY)
 #define ADC_TASK_PRIORITY           (tskIDLE_PRIORITY)
@@ -105,6 +110,14 @@ float OpuGetPresGain( void )    { return s_presGain; }
 #define PAR_FUEL_SV_F2_DEV_MBAR     500L
 #define PAR_FUEL_SV_F1_DEV_MBAR     0L
 #define THRUSTER_EMERGENCY_RUN_DEBUG_PERIOD_MS 1000UL
+#define THRUSTER_FAULT_MONITOR_START_MS        3250UL
+#define THRUSTER_FAULT_MONITOR_END_MS          20250UL
+#define THRUSTER_FAULT_PT_C1_HH_MBAR           7800L
+#define THRUSTER_FAULT_PT_C1_LL_MBAR           3000L
+#define THRUSTER_FAULT_PT_C1_VALID_MIN_MBAR    (-500L)
+#define THRUSTER_FAULT_PT_C1_VALID_MAX_MBAR    17000L
+#define THRUSTER_FAULT_TT_C1_HH_MK             1200000L
+#define THRUSTER_FAULT_TT_C1_VALID_MAX_MK      2500000L
 
 static volatile sOpuDebugMessage s_opuDebugQueue[OPU_DEBUG_QUEUE_DEPTH];
 static volatile UInt8 s_opuDebugHead = 0U;
@@ -118,6 +131,7 @@ static volatile UInt32 s_thrusterEmergencyDebugEventMask = 0U;
 static volatile UInt32 s_thrusterEmergencyDebugEventElapsedMs[THREMGDBG_EVENT_COUNT] = { 0U };
 static volatile eStateMachineMode s_thrusterEmergencyDebugEventMode[THREMGDBG_EVENT_COUNT] = { STATE_MACHINE_INIT_MODE };
 static volatile UInt32 s_thrusterEmergencyRunDebugAccumMs = 0U;
+static volatile UInt32 s_thrusterFaultFlags = THRUSTER_FAULT_NONE;
 static volatile UInt8 s_parRoutineActive = 0U;
 static volatile UInt32 s_parRoutineServiceCount = 0U;
 static volatile UInt32 s_parRoutineElapsedMs = 0U;
@@ -157,9 +171,12 @@ static void OpuDebug_PushMessage( UInt8 source, UInt8 event, UInt32 elapsedMs,
 static void ThrusterSequence_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs );
 static void ThrusterEmergency_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedMs );
 static UInt8 ThrusterEmergency_PreRunCheck( void );
+static UInt32 ThrusterEmergency_CheckRunFaults( UInt32 elapsedMs );
+static void ThrusterEmergency_LatchFaults( UInt32 faultFlags, UInt32 elapsedMs );
 static UInt8 ThrusterEmergency_RunMonitor( void );
 static UInt8 ThrusterSequence_Start( const sThrusterStartParams *params );
 static void ThrusterSequence_Abort( void );
+static void ThrusterSequence_EmergencyStop( void );
 static void ThrusterSequence_Service10ms( void );
 static void ParRoutine_QueueDebugEvent( void );
 static UInt8 ParRoutine_IsValidStartParams( const sParStartParams *params );
@@ -218,15 +235,15 @@ static void TcTask(void *p)
 
         /* [수정] ADS1263은 U3 1개만 실장. 이전 2칩(ADS#2/CS=PD28)은 펌웨어 가공 -> 제거. */
         ADS1263_SetDevice( 1 );
-        stTcTemp[0].fTempCh1 = ADS1263_GetTemperatureTask( 0 );   /* AIN0/1 = TC_SEN1, CJC compensated */
-        stTcTemp[0].fTempCh2 = ADS1263_GetTemperatureTask( 1 );   /* AIN2/3 = TC_SEN2, CJC compensated */
-        stTcTemp[0].fTempCh3 = ADS1263_GetTemperatureTask( 2 );   /* AIN4/5 = TC_SEN3, CJC compensated */
-        stTcTemp[0].fTempCh4 = ADS1263_GetTemperatureTask( 3 );   /* AIN6/7 = TC_SEN4, CJC compensated */
+        stTcTemp[0].fTempCh1 = ADS1263_GetTemperatureTask( 0 );   /* TC-O1 / TC1 / AIN0-1, CJC compensated */
+        stTcTemp[0].fTempCh2 = ADS1263_GetTemperatureTask( 1 );   /* TC-O2 / TC2 / AIN2-3, CJC compensated */
+        stTcTemp[0].fTempCh3 = ADS1263_GetTemperatureTask( 2 );   /* TC-F1 / TC3 / AIN4-5, CJC compensated */
+        stTcTemp[0].fTempCh4 = ADS1263_GetTemperatureTask( 3 );   /* TC-C1 / TC4 / AIN6-7, CJC compensated */
         stTcTemp[0].fTempCJ  = ADS1263_GetTemperatureTask( 4 );   /* AIN8/9 = TC_CJ1 10k NTC */
-        tcKelvin[0] = stTcTemp[0].fTempCh1 + OPU_CELSIUS_TO_KELVIN_OFFSET;
-        tcKelvin[1] = stTcTemp[0].fTempCh2 + OPU_CELSIUS_TO_KELVIN_OFFSET;
-        tcKelvin[2] = stTcTemp[0].fTempCh3 + OPU_CELSIUS_TO_KELVIN_OFFSET;
-        tcKelvin[3] = stTcTemp[0].fTempCh4 + OPU_CELSIUS_TO_KELVIN_OFFSET;
+        tcKelvin[SENSOR_TC_O1_INDEX] = stTcTemp[0].fTempCh1 + OPU_CELSIUS_TO_KELVIN_OFFSET;
+        tcKelvin[SENSOR_TC_O2_INDEX] = stTcTemp[0].fTempCh2 + OPU_CELSIUS_TO_KELVIN_OFFSET;
+        tcKelvin[SENSOR_TC_F1_INDEX] = stTcTemp[0].fTempCh3 + OPU_CELSIUS_TO_KELVIN_OFFSET;
+        tcKelvin[SENSOR_TC_C1_INDEX] = stTcTemp[0].fTempCh4 + OPU_CELSIUS_TO_KELVIN_OFFSET;
         tcKelvin[SENSOR_TC_CJC1_INDEX] = stTcTemp[0].fTempCJ + OPU_CELSIUS_TO_KELVIN_OFFSET;
         for( i = 0U; i < SENSOR_TC_CHANNEL_COUNT; i++ )
         {
@@ -285,7 +302,7 @@ static void AdcTask(void *p)
         for( i = 0U; i < 8U; i++ ) { r0[i] = med5( s0[i] ); }
         for( i = 0U; i < 5U; i++ ) { r1[i] = med5( s1[i] ); }
 
-        /* [압력 보정] 표시값 = 핀전압 × s_presGain (앞단 amp 보상). pcal 명령으로 런타임 보정. */
+        /* [압력 보정] legacy debug 표시값 = ADC 핀전압 × 회로도 감쇄 보정. */
         ptRaw[PSC_IO_INDEX( PSC_PT_O1 )] = r1[4];
         ptRaw[PSC_IO_INDEX( PSC_PT_O2 )] = r0[0];
         ptRaw[PSC_IO_INDEX( PSC_PT_O3 )] = r0[1];
@@ -461,6 +478,24 @@ void OpuDebug_ClearMessages( void )
     taskEXIT_CRITICAL();
 }
 
+UInt32 Opu_GetThrusterFaultFlags( void )
+{
+    UInt32 flags;
+
+    taskENTER_CRITICAL();
+    flags = s_thrusterFaultFlags;
+    taskEXIT_CRITICAL();
+
+    return flags;
+}
+
+void Opu_ClearThrusterFaults( void )
+{
+    taskENTER_CRITICAL();
+    s_thrusterFaultFlags = THRUSTER_FAULT_NONE;
+    taskEXIT_CRITICAL();
+}
+
 static volatile UInt32 s_opuTimerTickCount = 0U;
 static volatile UInt32 s_opu10msCallbackCount = 0U;
 static volatile UInt32 s_opu100msCallbackCount = 0U;
@@ -567,13 +602,113 @@ static void ThrusterEmergency_QueueDebugEvent( UInt8 eventIndex, UInt32 elapsedM
 static UInt8 ThrusterEmergency_PreRunCheck( void )
 {
     ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_PRE_RUN_CHECK, 0U );
-    return 1U;
+    return (Opu_GetThrusterFaultFlags() == THRUSTER_FAULT_NONE) ? 1U : 0U;
+}
+
+static UInt32 ThrusterEmergency_CheckRunFaults( UInt32 elapsedMs )
+{
+    UInt32 faultFlags = THRUSTER_FAULT_NONE;
+    SInt32 ptC1MilliBar;
+    sSensorTcTemperatureScan tcTemperature;
+    SInt32 ttC1MilliKelvin;
+    UInt16 ttC1Mask;
+
+    if( (elapsedMs < THRUSTER_FAULT_MONITOR_START_MS) ||
+        (elapsedMs > THRUSTER_FAULT_MONITOR_END_MS) )
+    {
+        return THRUSTER_FAULT_NONE;
+    }
+
+    if( Sensor_GetPtScanCount() == 0U )
+    {
+        faultFlags |= THRUSTER_FAULT_PT_C1_INVALID;
+    }
+    else
+    {
+        ptC1MilliBar = Sensor_GetPtPressureMilliBar( (UInt8)PSC_PT_C1 );
+        if( (ptC1MilliBar < THRUSTER_FAULT_PT_C1_VALID_MIN_MBAR) ||
+            (ptC1MilliBar > THRUSTER_FAULT_PT_C1_VALID_MAX_MBAR) )
+        {
+            faultFlags |= THRUSTER_FAULT_PT_C1_INVALID;
+        }
+        else
+        {
+            if( ptC1MilliBar > THRUSTER_FAULT_PT_C1_HH_MBAR )
+            {
+                faultFlags |= THRUSTER_FAULT_PT_C1_HH;
+            }
+            if( ptC1MilliBar < THRUSTER_FAULT_PT_C1_LL_MBAR )
+            {
+                faultFlags |= THRUSTER_FAULT_PT_C1_LL;
+            }
+        }
+    }
+
+    memset( &tcTemperature, 0, sizeof(tcTemperature) );
+    Sensor_GetTcTemperatureScan( &tcTemperature );
+    ttC1Mask = (UInt16)(1U << SENSOR_TC_C1_INDEX);
+    ttC1MilliKelvin = tcTemperature.milliKelvin[SENSOR_TC_C1_INDEX];
+    if( (Sensor_GetTcTemperatureScanCount() == 0U) ||
+        ((tcTemperature.validMask & ttC1Mask) == 0U) ||
+        (ttC1MilliKelvin <= 0) ||
+        (ttC1MilliKelvin > THRUSTER_FAULT_TT_C1_VALID_MAX_MK) )
+    {
+        faultFlags |= THRUSTER_FAULT_TT_C1_INVALID;
+    }
+    else if( ttC1MilliKelvin > THRUSTER_FAULT_TT_C1_HH_MK )
+    {
+        faultFlags |= THRUSTER_FAULT_TT_C1_HH;
+    }
+
+    return faultFlags;
+}
+
+static void ThrusterEmergency_LatchFaults( UInt32 faultFlags, UInt32 elapsedMs )
+{
+    UInt32 newFaults;
+
+    if( faultFlags == THRUSTER_FAULT_NONE )
+    {
+        return;
+    }
+
+    taskENTER_CRITICAL();
+    newFaults = faultFlags & ~s_thrusterFaultFlags;
+    s_thrusterFaultFlags |= faultFlags;
+    taskEXIT_CRITICAL();
+
+    if( (newFaults & THRUSTER_FAULT_PT_C1_HH) != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_FAULT_PT_C1_HH,
+                                           elapsedMs );
+    }
+    if( (newFaults & THRUSTER_FAULT_PT_C1_LL) != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_FAULT_PT_C1_LL,
+                                           elapsedMs );
+    }
+    if( (newFaults & THRUSTER_FAULT_TT_C1_HH) != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_FAULT_TT_C1_HH,
+                                           elapsedMs );
+    }
+    if( (newFaults & THRUSTER_FAULT_PT_C1_INVALID) != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_FAULT_PT_C1_INV,
+                                           elapsedMs );
+    }
+    if( (newFaults & THRUSTER_FAULT_TT_C1_INVALID) != 0U )
+    {
+        ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_FAULT_TT_C1_INV,
+                                           elapsedMs );
+    }
 }
 
 static UInt8 ThrusterEmergency_RunMonitor( void )
 {
     UInt8 sendDebug = 0U;
     UInt32 elapsedMs;
+    UInt32 faultFlags;
 
     taskENTER_CRITICAL();
     elapsedMs = s_thrusterSequence.elapsedMs;
@@ -599,6 +734,13 @@ static UInt8 ThrusterEmergency_RunMonitor( void )
     {
         ThrusterEmergency_QueueDebugEvent( THREMGDBG_EVENT_RUN_MONITOR,
                                            elapsedMs );
+    }
+
+    faultFlags = ThrusterEmergency_CheckRunFaults( elapsedMs );
+    if( faultFlags != THRUSTER_FAULT_NONE )
+    {
+        ThrusterEmergency_LatchFaults( faultFlags, elapsedMs );
+        return 0U;
     }
 
     return 1U;
@@ -746,6 +888,15 @@ static void ThrusterSequence_Abort( void )
     ThrusterSequence_ClearState();
 }
 
+static void ThrusterSequence_EmergencyStop( void )
+{
+    RsTask_SetHpvOutput( THRUSTER_SV_O3_CHANNEL, 0U );
+    RsTask_SetHpvOutput( THRUSTER_SV_F3_CHANNEL, 0U );
+    RsTask_SetSparkPlugOutput( 0U );
+    ThrusterSequence_ClearState();
+    (void)StateMachine_ForceMode( STATE_MACHINE_NORMAL_MODE );
+}
+
 static void ThrusterSequence_Service10ms( void )
 {
     if( s_thrusterSequence.active == 0U )
@@ -764,6 +915,7 @@ static void ThrusterSequence_Service10ms( void )
 
     if( ThrusterEmergency_RunMonitor() == 0U )
     {
+        ThrusterSequence_EmergencyStop();
         return;
     }
 

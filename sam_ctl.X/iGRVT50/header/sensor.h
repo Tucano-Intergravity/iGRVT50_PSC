@@ -6,8 +6,12 @@
 #define SENSOR_PT_CHANNEL_COUNT     9U
 #define SENSOR_TC_CHANNEL_COUNT     5U
 #define SENSOR_PT1_INDEX            0U
-#define SENSOR_TC1_INDEX            0U
-#define SENSOR_TC_CJC1_INDEX        4U
+#define SENSOR_TC_O1_INDEX          PSC_IO_INDEX( PSC_TC_O1 )
+#define SENSOR_TC_O2_INDEX          PSC_IO_INDEX( PSC_TC_O2 )
+#define SENSOR_TC_F1_INDEX          PSC_IO_INDEX( PSC_TC_F1 )
+#define SENSOR_TC_C1_INDEX          PSC_IO_INDEX( PSC_TC_C1 )
+#define SENSOR_TC1_INDEX            SENSOR_TC_O1_INDEX
+#define SENSOR_TC_CJC1_INDEX        PSC_IO_INDEX( PSC_TC_CJC1 )
 
 typedef struct SensorPtScan {
     UInt16 rawAdc[SENSOR_PT_CHANNEL_COUNT];
