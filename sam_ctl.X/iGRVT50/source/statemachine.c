@@ -21,12 +21,15 @@ static UInt8 StateMachine_IsValidMode( eStateMachineMode mode )
 
 static void StateMachine_EnterMode( eStateMachineMode nextMode )
 {
+    eStateMachineMode previousMode;
+
     if( StateMachine_IsValidMode( nextMode ) == 0U )
     {
         return;
     }
 
-    s_stateMachine.previousMode = s_stateMachine.currentMode;
+    previousMode = s_stateMachine.currentMode;
+    s_stateMachine.previousMode = previousMode;
     s_stateMachine.currentMode = nextMode;
     s_stateMachine.modeElapsedTicks = 0U;
     s_stateMachine.transitionCount++;
@@ -137,6 +140,17 @@ UInt8 StateMachine_RequestMode( eStateMachineMode mode )
     }
 
     s_stateMachine.requestedMode = mode;
+    return 1U;
+}
+
+UInt8 StateMachine_ForceMode( eStateMachineMode mode )
+{
+    if( StateMachine_IsValidMode( mode ) == 0U )
+    {
+        return 0U;
+    }
+
+    StateMachine_EnterMode( mode );
     return 1U;
 }
 

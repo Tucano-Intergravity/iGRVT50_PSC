@@ -26,6 +26,7 @@ typedef struct StateMachineSnapshot {
 void StateMachine_Init( void );
 void StateMachine_100HzEvent( void );
 UInt8 StateMachine_RequestMode( eStateMachineMode mode );
+UInt8 StateMachine_ForceMode( eStateMachineMode mode );
 eStateMachineMode StateMachine_GetMode( void );
 const char *StateMachine_GetModeName( eStateMachineMode mode );
 void StateMachine_GetSnapshot( sStateMachineSnapshot *pSnapshot );

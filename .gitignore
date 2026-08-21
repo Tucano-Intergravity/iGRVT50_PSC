@@ -12,6 +12,7 @@ sam_ctl.X/defmplabxtrace.log*
 .vscode/
 .superpowers/
 .worktrees/
+tools/csp-rs485/
 
 # Object and binary artifacts
 *.o

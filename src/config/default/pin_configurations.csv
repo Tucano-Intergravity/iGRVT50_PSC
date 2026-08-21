@@ -8,7 +8,7 @@
 11,PC0,,Available,In,,,,,,,
 12,PC27,TCADC_SPIMOSI,SPI1_MOSI,n/a,n/a,No,Disabled,No,No,Disabled,Low
 13,PC26,TCADC_SPIMISO,SPI1_MISO,n/a,n/a,No,Disabled,No,No,Disabled,Low
-14,PC31,,Available,In,,,,,,,
+14,PC31,PRES_SENSE1,AFEC1_AD6,n/a,n/a,No,Disabled,No,No,Disabled,Low
 15,PC30,SEN_VDD_MCU_P3V3,AFEC1_AD5,n/a,n/a,No,Disabled,No,No,Disabled,Low
 16,PC29,SEN_P5V_D_CB,AFEC1_AD4,n/a,n/a,No,Disabled,No,No,Disabled,Low
 17,PC12,P28V_VSENSE,AFEC1_AD3,n/a,n/a,No,Disabled,No,No,Disabled,Low
@@ -25,7 +25,7 @@
 28,PE5,PRES_SENSE4,AFEC0_AD3,n/a,n/a,No,Disabled,No,No,Disabled,Low
 31,PB3,PRES_SENSE3,AFEC0_AD2,n/a,n/a,No,Disabled,No,No,Disabled,Low
 32,PA21,UART1_RX,USART1_RXD1,n/a,n/a,No,Disabled,No,No,Disabled,Low
-34,PD30,PRES_SENSE1,AFEC0_AD0,n/a,n/a,No,Disabled,No,No,Disabled,Low
+34,PD30,PRES_SENSE2,AFEC0_AD0,n/a,n/a,No,Disabled,No,No,Disabled,Low
 35,PA7,XIN32_32K,PMC_XIN32,n/a,n/a,No,Disabled,No,No,Disabled,Low
 36,PA8,,Available,In,,,,,,,
 37,PA22,UART1_DE,GPIO,Out,Low,No,Disabled,No,No,Disabled,Low

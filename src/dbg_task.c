@@ -23,7 +23,9 @@
 #include <sys/time.h>		// 시간 관련 라이브러리
 
 #include "sam_ctl.h"
-#include "uartcomm.h"
+#include "csp/sam_csp_runtime.h"
+#include "csp/sam_csp_service.h"
+#include <csp_rs485_link.h>
 
 
 /*==============================================================================
@@ -35,7 +37,6 @@ void DbgTask( void *pvParameters );										// DBG Task
  * Gloabal Variables
  *============================================================================*/
 UInt16 usTcPrn;
-UInt16 usRs422Loop = 0U;   /* Default OFF for telemetry/telecommand monitoring. Use 'uart 1' only for echo tests. */
 UInt16 usAdcPrn;
 
 /*==============================================================================
@@ -462,11 +463,7 @@ static int testTcLogFunc(int argc, char *argv[])
 	UInt16 usDbgCmd;
 	if(argc<2)
 	{
-		printf( "RS422 Loopback=%u RX bytes=%lu drops=%lu errors=%lu\r\n",
-		        (unsigned)usRs422Loop,
-		        (unsigned long)UartComm_GetRxByteCount(),
-		        (unsigned long)UartComm_GetRxDropCount(),
-		        (unsigned long)UartComm_GetRxErrorCount() );
+		printf( "TC LOG cmd : %d\r\n", usTcPrn );
 	}
 	else
 	{
@@ -1109,22 +1106,51 @@ static int testPcalFunc(int argc, char *argv[])
 	return(0);
 }
 
-static int testUartLogFunc(int argc, char *argv[])
+static int testCspFunc(int argc, char *argv[])
 {
-	UInt16 usDbgCmd;
-	if(argc<2)
-	{
-		printf("cmd err\r\n");
-	}
-	else
-	{
-		usDbgCmd = htoi(argv[1]);
-		usRs422Loop = usDbgCmd;
-		printf( "RS422 Loopback Control cmd : %d\r\n", usRs422Loop );
+	sam_csp_runtime_status_t runtime;
+	sam_csp_service_counters_t service;
+	csp_rs485_health_t health;
+	TaskHandle_t linkTask;
+	(void)argc;
+	(void)argv;
 
-	}
+	SamCspRuntime_GetStatus( &runtime );
+	SamCspService_GetCounters( &service );
+	csp_rs485_link_get_health( &health );
+	linkTask = xTaskGetHandle( "csp-rs485" );
 
-	return(0);					// '0' 리턴
+	printf( "CSP ready=%u init=%ld router=%p service=%p\r\n",
+	        (unsigned)runtime.ready,
+	        (long)runtime.init_code,
+	        (void *)runtime.router_task,
+	        (void *)runtime.service_task );
+	printf( "RS485 link state=%u err=%u uart=%lu dma=%lu tx_to=%lu tx_fail=%lu proto=%lu drop=%lu hwm=%lu disc=%lu rec=%lu/%lu/%lu\r\n",
+	        (unsigned)health.state,
+	        (unsigned)health.last_error,
+	        (unsigned long)health.uart_errors,
+	        (unsigned long)health.dma_errors,
+	        (unsigned long)health.tx_timeouts,
+	        (unsigned long)health.tx_failures,
+	        (unsigned long)health.protocol_errors,
+	        (unsigned long)health.stream_dropped_bytes,
+	        (unsigned long)health.stream_high_watermark,
+	        (unsigned long)health.stream_discontinuities,
+	        (unsigned long)health.recovery_attempts,
+	        (unsigned long)health.recovery_successes,
+	        (unsigned long)health.recovery_failures );
+	printf( "service malformed=%lu alloc=%lu send=%lu peer=%lu portdrop=%lu heap=%lu\r\n",
+	        (unsigned long)service.malformed_packets,
+	        (unsigned long)service.allocation_failures,
+	        (unsigned long)service.send_failures,
+	        (unsigned long)service.rejected_peers,
+	        (unsigned long)service.dropped_ports,
+	        (unsigned long)xPortGetFreeHeapSize() );
+	printf( "stack watermark router=%lu service=%lu link=%lu\r\n",
+	        (runtime.router_task != NULL) ? (unsigned long)uxTaskGetStackHighWaterMark( runtime.router_task ) : 0UL,
+	        (runtime.service_task != NULL) ? (unsigned long)uxTaskGetStackHighWaterMark( runtime.service_task ) : 0UL,
+	        (linkTask != NULL) ? (unsigned long)uxTaskGetStackHighWaterMark( linkTask ) : 0UL );
+	return(0);
 }
 
 /**
@@ -1207,22 +1233,6 @@ static int testHtrRegFunc(int argc, char *argv[])
 	return(0);
 }
 
-/* [디버그] RS485(USART1) 단독 송신 테스트 : rs485 [count] [hexbyte]
- * PA22=DE, PA24=/RE를 TX 동안만 High로 올려 차동라인(Y/Z) 송신.
- * 기본 0x55를 2000회 연속 송신 -> 스코프로 차동 파형/보레이트 확인 */
-static int testRs485Func(int argc, char *argv[])
-{
-	UInt32 n = 2000U;
-	UInt8  b = 0x55U;
-	if( argc >= 2 ) n = (UInt32)atoi( argv[1] );
-	if( argc >= 3 ) b = (UInt8)htoi( argv[2] );
-	printf( "RS485 TX: 0x%02X x %lu @921600 ...\r\n", (unsigned)b, (unsigned long)n );
-	UartComm_SendByteRepeatBlocking( b, n );
-	printf( "RS485 TX done\r\n" );
-	return(0);
-}
-
-
 /**
  * @fn testHpvFunc
  * @brief HP 밸브 인터페이스(DRV3946) 검증
@@ -1242,18 +1252,26 @@ static int testSafeFunc(int argc, char *argv[])
 	return(0);
 }
 
-/* [검증] 압력 4ch (사양: PT-F1~F2, PT-O1~O2 / Metallux ME750 / 0.5~4.5V, 5VDC excitation)
- * 매핑: PT-F1=PRES1(PC31,AFEC1CH6), PT-F2=PRES2(PD30), PT-O1=PRES3(PB3), PT-O2=PRES4(PE5)  ※보드태그와 대조요 */
+/* [검증] 압력 9ch (Metallux ME750 / 0.5~4.5V, 5VDC excitation)
+ * 실제 매핑: PT-O1~O4=PT1~4, PT-F1~F4=PT5~8, PT-C1=PT9 */
 static int testPtFunc(int argc, char *argv[])
 {
 	extern sAdcTemp stAdcTemp;
-	float p[4]; const char *tag[4] = { "PT-F1", "PT-F2", "PT-O1", "PT-O2" };
+	float p[9];
+	const char *tag[9] = {
+		"PT-O1", "PT-O2", "PT-O3", "PT-O4",
+		"PT-F1", "PT-F2", "PT-F3", "PT-F4",
+		"PT-C1"
+	};
 	int i;
 	(void)argc; (void)argv;
 	p[0] = stAdcTemp.fPres1; p[1] = stAdcTemp.fPres2;
 	p[2] = stAdcTemp.fPres3; p[3] = stAdcTemp.fPres4;
+	p[4] = stAdcTemp.fPres5; p[5] = stAdcTemp.fSp6;
+	p[6] = stAdcTemp.fSp7; p[7] = stAdcTemp.fSp8;
+	p[8] = stAdcTemp.fSp9;
 	printf( "[Pressure] Metallux ME750  signal 0.5~4.5V (5VDC exc)\r\n" );
-	for( i = 0; i < 4; i++ )
+	for( i = 0; i < 9; i++ )
 	{
 		float pct = (p[i] - 0.5f) / 4.0f * 100.0f;   /* 0.5V=0%, 4.5V=100% */
 		printf( "  %s : %6.3f V  (%5.1f%% FS)\r\n", tag[i], (double)p[i], (double)pct );
@@ -1423,7 +1441,7 @@ static int testHpvFunc(int argc, char *argv[])
 			return(0);
 		}
 
-		/* [사양] HP 밸브 개폐: hpv open|close <1=SV-F1 | 2=SV-O1>
+		/* [사양] HP 밸브 개폐: hpv open|close <1=SV-O1 | 2=SV-O2>
 		 * 구동 상세: Peak 28V ~1.0A / Hold ~0.07A (전류제어 = DRV3946 내부 레귤레이션)
 		 * ※주의1: 채널 ON에는 EN핀 + CMD1 CHx_CTRL(SPI) 둘 다 필요 -> DRV SPI 복구 후 완전동작.
 		 * ※주의2: KILL_ALL 폴라리티/28V 인가 전 반드시 실측 확인(여기선 Clear=정상운전 가정). */
@@ -1431,8 +1449,8 @@ static int testHpvFunc(int argc, char *argv[])
 		{
 			UInt8 ch = ( argc >= 3 ) ? (UInt8)atoi(argv[2]) : 0U;
 			UInt8 on = (UInt8)(!strcmp(argv[1],"OPEN"));
-			const char *sv = (ch==1U) ? "SV-F1" : (ch==2U) ? "SV-O1" : "?";
-			if( ch != 1U && ch != 2U ) { printf("usage: hpv open|close <1=SV-F1|2=SV-O1>\r\n"); return(0); }
+			const char *sv = (ch==1U) ? "SV-O1" : (ch==2U) ? "SV-O2" : "?";
+			if( ch != 1U && ch != 2U ) { printf("usage: hpv open|close <1=SV-O1|2=SV-O2>\r\n"); return(0); }
 			DRV3946Q1_EN1_OutputEnable(); DRV3946Q1_EN2_OutputEnable(); DRV3946Q1_KILL_ALL_OutputEnable();
 			if( on )
 			{
@@ -1539,7 +1557,7 @@ static int testHpvFunc(int argc, char *argv[])
 			s0 = DRV3946_Read24( 0x01U, g_drvNode, &e0 );
 			s1 = DRV3946_Read24( 0x02U, g_drvNode, &e1 );
 			printf( "HP valve status [node%u]:\r\n", (unsigned)g_drvNode );
-			printf( "  pins: nFAULT=%d EN1(SV-F1)=%d EN2(SV-O1)=%d KILL=%d\r\n",
+			printf( "  pins: nFAULT=%d EN1(SV-O1)=%d EN2(SV-O2)=%d KILL=%d\r\n",
 			        (int)DRV3946Q1_nFAULT_Get(), (int)DRV3946Q1_EN1_Get(),
 			        (int)DRV3946Q1_EN2_Get(), (int)DRV3946Q1_KILL_ALL_Get() );
 			printf( "  DRV STATUS0=0x%04X STATUS1=0x%04X (DEVICE_ID=0x%X, 0x2=정상 / 0xFFFF=SPI무응답)\r\n",
@@ -2171,7 +2189,7 @@ static int testPcs2Func(int argc, char *argv[])
  *          PDSR이 PU=1/PD=0으로 움직였다면(개방 핀) DEAD 확정 강화
  *
  * 주의:
- *  - 실행 중(약 1~2초) 콘솔/RS422 핀이 잠깐 아날로그로 전환됨.
+ *  - 실행 중(약 1~2초) 콘솔/USART1 핀이 잠깐 아날로그로 전환됨.
  *    키 입력 금지. 출력은 캡처 후 일괄 인쇄라 깨지지 않음.
  *  - 끝나면 풀업/풀다운 전부 해제, 운용 채널만 재enable.
  * ============================================================= */
@@ -2209,7 +2227,7 @@ static int testAmapFunc(int argc, char *argv[])
     /* 핀-채널 표 (MCC core.yml / SAMV71 데이터시트 기준) */
     static const sAmapEnt tbl[] = {
         { 0, 0, 0, PIOD_REGS, 30, "PD30" },
-        { 0, 1, 0, PIOA_REGS, 21, "PA21 RS422RX" },
+        { 0, 1, 0, PIOA_REGS, 21, "PA21 USART1_RX" },
         { 0, 2, 0, PIOB_REGS,  3, "PB3  PRES3" },
         { 0, 3, 0, PIOE_REGS,  5, "PE5  PRES4" },
         { 0, 4, 0, PIOE_REGS,  4, "PE4" },
@@ -2312,9 +2330,9 @@ static void UsrCmdList(void)
 	UsrCmdSet( "adc",  testAdcLogFunc,"AFEC analog log on/off",'N',"\0");
 	UsrCmdSet( "acal", testAcalFunc,  "28V 전류센스 보정: acal off(0A) / acal gain <A>(known I)",'N',"\0");
 	UsrCmdSet( "pcal", testPcalFunc,  "압력 게인 보정: 주입V 인가하고 pcal <V>",'N',"\0");
-    UsrCmdSet( "uart", testUartLogFunc,"RS422 USART1 status or loopback: uart [0|1]",'N',"\0");
+    UsrCmdSet( "csp",  testCspFunc,   "CSP RS485 responder status",'N',"\0");
     UsrCmdSet( "safe", testSafeFunc,  "EMERGENCY: all actuators OFF (HP/micro/heater)",'N',"\0");
-    UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-F1/F2/O1/O2 (0.5~4.5V, %FS)",'N',"\0");
+    UsrCmdSet( "pt",   testPtFunc,    "Pressure verify: PT-O1~O4/F1~F4/C1 (0.5~4.5V, %FS)",'N',"\0");
     UsrCmdSet( "tt",   testTtFunc,    "Temperature verify: TT-F1~F3/O1~O3 (K-type, degC)",'N',"\0");
     UsrCmdSet( "hpv",  testHpvFunc,   "HP valve: hpv <1-8> [f] | cycle on/off | node/wake/on/off/stat/init",'N',"\0");
     UsrCmdSet( "off",  testOffFunc,   "ALL OFF (HP 8 + LP 12 + Heater 4 + SP)",'N',"\0");
@@ -2322,7 +2340,6 @@ static void UsrCmdList(void)
     UsrCmdSet( "htr",  testHtrFunc,   "Heater: htr <1-4> <0-100>",'N',"\0");
     UsrCmdSet( "sp",   testSpFunc,    "Spark plug: sp <0|1> (PC5 GPIO)",'N',"\0");
     UsrCmdSet( "htrreg", testHtrRegFunc, "TC3 reg dump (timer/duty check)",'N',"\0");
-    UsrCmdSet( "rs485", testRs485Func, "RS485 USART1 TX test: rs485 [count] [hexbyte]",'N',"\0");
     UsrCmdSet( "araw", testAdcRawFunc, "AFEC1 raw scan CH0-11",'N',"\0");
     UsrCmdSet( "pinst", testPinstFunc, "PC12/15/29/30 PIO+AFEC 실태덤프",'N',"\0");
     UsrCmdSet( "ascan", testAscanFunc, "AFEC1 전채널 스캔(2.54V 위치찾기)",'N',"\0");

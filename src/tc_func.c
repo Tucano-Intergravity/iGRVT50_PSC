@@ -235,11 +235,16 @@ typedef void (*ADS1263_DelayFunc)( UInt32 delayMs );
 static void ADS1263_BusyDelayMs( UInt32 delayMs );
 static void ADS1263_TaskDelayMs( UInt32 delayMs );
 static float ADS1263_GetTemperatureWithDelay( UInt8 ucCh, ADS1263_DelayFunc delayFunc );
+static float ADS1263_ReadCjcCh1TempC( ADS1263_DelayFunc delayFunc, int32_t *pRawCode );
+static float ADS1263_ReadThermocoupleTempC( UInt8 ainp, UInt8 ainm,
+                                            float cjTemp,
+                                            ADS1263_DelayFunc delayFunc,
+                                            int32_t *pRawCode );
 
 static float ADC_CodeToVoltage(int32_t code);
-static float voltage_to_ntc_resistance( float v_ntc );
+static float voltage_to_cjc_ntc_resistance( float v_ntc );
 static float ntc_resistance_to_temperature( float r_ntc );
-static float adc_to_ntc_temperature( int32_t code );
+static float adc_to_cjc_ntc_temperature( int32_t code );
 static float typeK_mv_to_temp( float mv );
 static float typeK_temp_to_mv(float temp_c);
 static float adc_to_tc_temp( int32_t code, float cjTemp );
@@ -365,7 +370,7 @@ static uint8_t s_tcBypass = 1U;   /* [확정] 1=PGA bypass(gain1,rail-to-rail) �
 static float   s_tcOffmV[2][4] = { {0,0,0,0}, {0,0,0,0} };   /* ADS#1=4ch(SEN1~4), ADS#2=2ch(SEN5~6) */
 static float   s_curTcOffmV    = 0.0f;   /* GetTemperature가 변환 직전 설정 */
 
-/* [진단] 채널별 마지막 raw ADC code (CH0~3=TC, 4=CJ). 0xFFFFFFFF=SPI 무응답(칩 DOUT high-Z),
+/* [진단] 채널별 마지막 raw ADC code (CH0~3=TC1~4, CH4=CJC1/AIN8-9). 0xFFFFFFFF=SPI 무응답(칩 DOUT high-Z),
  * 0x00000000=리드불가. 정상 변환이면 의미있는 32bit 값. 운영 TcPrint에서 hex로 노출. */
 static int32_t s_tcRawCode[2][5] = { {0,0,0,0,0}, {0,0,0,0,0} };
 int32_t ADS1263_GetRawCode( UInt8 dev, UInt8 ch ) { return s_tcRawCode[(dev==2)?1:0][(ch>4U)?4U:ch]; }
@@ -653,10 +658,16 @@ void ADS1263_SelfOffsetCal( UInt8 dev )
     ADS1263_SetDevice( 1 );
 }
 
-static float voltage_to_ntc_resistance( float v_ntc )
+static float voltage_to_cjc_ntc_resistance( float v_ntc )
 {
-    if (v_ntc <= 0.0f) return 1e9f;
-    if (v_ntc >= (VREF - 1e-6f)) return 1.0f;
+    if( v_ntc <= 0.0f )
+    {
+        return 0.0f;
+    }
+    if( v_ntc >= (VREF - 1.0e-6f) )
+    {
+        return 1.0e9f;
+    }
 
     return R_FIXED * v_ntc / (VREF - v_ntc);
 }
@@ -664,29 +675,70 @@ static float voltage_to_ntc_resistance( float v_ntc )
 
 static float ntc_resistance_to_temperature( float r_ntc )
 {
-    float inv_T =
-        (1.0f / NTC_T0) +
-        (1.0f / NTC_BETA) * logf(r_ntc / NTC_R0);
+    float inv_T;
 
-    float temp_K = 1.0f / inv_T;
-    return temp_K - 273.15f;
+    if( r_ntc <= 0.0f )
+    {
+        return NAN;
+    }
+
+    inv_T = (1.0f / CJC_NTC_T0) +
+        ((1.0f / CJC_NTC_BETA) * logf( r_ntc / CJC_NTC_R25 ));
+    return (1.0f / inv_T) - 273.15f;
 }
 
-static float adc_to_ntc_temperature( int32_t code )
+static float adc_to_cjc_ntc_temperature( int32_t code )
 {
     float v_ntc;
     float r_ntc;
-    float temp_c;
 
     v_ntc = ADC_CodeToVoltage( code );
     
-    if (v_ntc < 0.0f) v_ntc = -v_ntc;
+    if( v_ntc < 0.0f )
+    {
+        v_ntc = -v_ntc;
+    }
 
-    r_ntc = voltage_to_ntc_resistance(v_ntc);
+    r_ntc = voltage_to_cjc_ntc_resistance( v_ntc );
+    return ntc_resistance_to_temperature( r_ntc );
+}
 
-    temp_c = ntc_resistance_to_temperature(r_ntc);
+static float ADS1263_ReadCjcCh1TempC( ADS1263_DelayFunc delayFunc, int32_t *pRawCode )
+{
+    int32_t code;
 
-    return temp_c;
+    ADS1263_SetChannel( 8, 9 );              /* TC_CJ1+/TC_CJ1- 10k NTC = ADS1263 U3 AIN8/AIN9. */
+    ADS1263_WriteReg( ADS1263_MODE2, 0x0A ); /* gain1 for the NTC divider voltage input. */
+    ADS1263_StartAdc();
+    delayFunc( 50U );
+    code = ADS1263_ReadAdc();
+    if( pRawCode != (int32_t *)0 )
+    {
+        *pRawCode = code;
+    }
+
+    return adc_to_cjc_ntc_temperature( code );
+}
+
+static float ADS1263_ReadThermocoupleTempC( UInt8 ainp, UInt8 ainm,
+                                            float cjTemp,
+                                            ADS1263_DelayFunc delayFunc,
+                                            int32_t *pRawCode )
+{
+    int32_t code;
+
+    ADS1263_SetChannel( ainp, ainm );
+    s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, ainp );
+    ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
+    ADS1263_StartAdc();
+    delayFunc( 50U );
+    code = ADS1263_ReadAdc();
+    if( pRawCode != (int32_t *)0 )
+    {
+        *pRawCode = code;
+    }
+
+    return adc_to_tc_temp2( code, cjTemp );
 }
 
 static float typeK_mv_to_temp( float mv )
@@ -739,6 +791,11 @@ static float typeK_temp_to_mv(float temp_c)
     mv1 = typeK[idx + 1];
 
     return mv0 + frac * (mv1 - mv0);
+}
+
+float ADS1263_TypeKTempToMilliVolt( float tempC )
+{
+    return typeK_temp_to_mv( tempC );
 }
 
 static float adc_to_tc_temp( int32_t code, float cjTemp )
@@ -926,9 +983,9 @@ float ADS1263_GetTemperatureTask( UInt8 ucCh )
 
 static float ADS1263_GetTemperatureWithDelay( UInt8 ucCh, ADS1263_DelayFunc delayFunc )
 {
-    int32_t adcCode;
+    int32_t adcCode = 0;
+    int32_t cjCode = 0;
     float cjTemp;
-    float tcTemp;
     float retTemp = 0.0;
 
     if( delayFunc == (ADS1263_DelayFunc)0 )
@@ -939,66 +996,32 @@ static float ADS1263_GetTemperatureWithDelay( UInt8 ucCh, ADS1263_DelayFunc dela
     /* VBIAS(floating TC 공통모드 레벨시프트) 반영 */
     tc_apply_power();
 
-    /* CJ(냉접점) 계측: ADS1263 내부 온도센서(다이온도) 사용
-     * (외부 NTC 변환/핀페어 모호성 회피, 122.4mV@25°C·420µV/°C) */
-    ADS1263_SetChannel(0x0B, 0x0B);             // INPMUX=0xBB 내부 온도센서
-    ADS1263_WriteReg( ADS1263_MODE2, 0x0A );    // gain1
-    ADS1263_StartAdc();                         // 계측 시작
-    delayFunc( 50U );
-    adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
-    cjTemp = 25.0f + ( ADC_CodeToVoltage(adcCode)*1.0e6f - 122400.0f ) / 420.0f;
+    /* CJC1은 도면 기준 TC_CJ1+/TC_CJ1- = ADS1263 U3 AIN8/AIN9이다. */
+    cjTemp = ADS1263_ReadCjcCh1TempC( delayFunc, &cjCode );
 
     if( ucCh == 0 )
     {
-        /* TC 계측 */
-        ADS1263_SetChannel(0, 1);
-        s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 0 );
-        ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
-        ADS1263_StartAdc();
-        delayFunc( 50U );
-        adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
-        tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
-        retTemp = tcTemp;
+        retTemp = ADS1263_ReadThermocoupleTempC( 0U, 1U, cjTemp,
+                                                 delayFunc, &adcCode );
     }
     else if( ucCh == 1 )
     {
-        /* TC 계측 */
-        ADS1263_SetChannel(2, 3);
-        s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 2 );
-        ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
-        ADS1263_StartAdc();
-        delayFunc( 50U );
-        adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
-        tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
-        retTemp = tcTemp;
+        retTemp = ADS1263_ReadThermocoupleTempC( 2U, 3U, cjTemp,
+                                                 delayFunc, &adcCode );
     }
     else if( ucCh == 2 )
     {
-        /* TC 계측 */
-        ADS1263_SetChannel(4, 5);
-        s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 4 );
-        ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
-        ADS1263_StartAdc();
-        delayFunc( 50U );
-        adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
-        tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
-        retTemp = tcTemp;
+        retTemp = ADS1263_ReadThermocoupleTempC( 4U, 5U, cjTemp,
+                                                 delayFunc, &adcCode );
     }
     else if( ucCh == 3 )
     {
-        /* TC 계측 */
-        ADS1263_SetChannel(6, 7);
-        s_curTcOffmV = ADS1263_GetTcOffsetCh( s_tcDev, 6 );
-        ADS1263_WriteReg( ADS1263_MODE2, tc_mode2_val() );
-        ADS1263_StartAdc();
-        delayFunc( 50U );
-        adcCode = ADS1263_ReadAdc();                // 계측 데이터 획득
-        tcTemp = adc_to_tc_temp2( adcCode, cjTemp );
-        retTemp = tcTemp;
+        retTemp = ADS1263_ReadThermocoupleTempC( 6U, 7U, cjTemp,
+                                                 delayFunc, &adcCode );
     }
     else if( ucCh == 4 )
     {
-        /* CJ 계측 */
+        adcCode = cjCode;
         retTemp = cjTemp;
     }
     else
