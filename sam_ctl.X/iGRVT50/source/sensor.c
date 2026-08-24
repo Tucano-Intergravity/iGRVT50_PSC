@@ -14,6 +14,24 @@
 #define SENSOR_PT_FRONTEND_GAIN \
     ((SENSOR_PT_DIVIDER_TOP_OHM + SENSOR_PT_DIVIDER_BOTTOM_OHM) / \
      SENSOR_PT_DIVIDER_BOTTOM_OHM)
+#define SENSOR_PT_O1_CAL_SCALE 1.0214285714f
+#define SENSOR_PT_O2_CAL_SCALE 1.0252857143f
+#define SENSOR_PT_O3_CAL_SCALE 1.0205714286f
+#define SENSOR_PT_O4_CAL_SCALE 1.0218571429f
+#define SENSOR_PT_F1_CAL_SCALE 1.0240000000f
+#define SENSOR_PT_F2_CAL_SCALE 1.0207142857f
+#define SENSOR_PT_F3_CAL_SCALE 1.0220000000f
+#define SENSOR_PT_F4_CAL_SCALE 1.0225714286f
+#define SENSOR_PT_C1_CAL_SCALE 1.0207142857f
+#define SENSOR_PT_O1_CAL_BIAS_MV 23.0f
+#define SENSOR_PT_O2_CAL_BIAS_MV 36.5f
+#define SENSOR_PT_O3_CAL_BIAS_MV 36.0f
+#define SENSOR_PT_O4_CAL_BIAS_MV 36.5f
+#define SENSOR_PT_F1_CAL_BIAS_MV 35.0f
+#define SENSOR_PT_F2_CAL_BIAS_MV 18.5f
+#define SENSOR_PT_F3_CAL_BIAS_MV 19.0f
+#define SENSOR_PT_F4_CAL_BIAS_MV 18.0f
+#define SENSOR_PT_C1_CAL_BIAS_MV 17.5f
 #define SENSOR_KELVIN_OFFSET_C      273.15f
 #define SENSOR_TC_VALID_MAX_MK      2500000L
 
@@ -28,6 +46,31 @@ static volatile UInt8 s_sensorOverrideEnabled = 0U;
 static volatile SInt32 s_overridePtMilliBar[SENSOR_PT_CHANNEL_COUNT] = { 0 };
 static volatile SInt32 s_overrideTcMilliKelvin[SENSOR_TC_CHANNEL_COUNT] = { 0 };
 static volatile UInt16 s_overrideTcTemperatureValidMask = 0U;
+
+/* PSC-internal PT voltage calibration: measured_mV = scale * actual_mV + bias_mV. */
+static const float s_ptCalibrationScale[SENSOR_PT_CHANNEL_COUNT] = {
+    SENSOR_PT_O1_CAL_SCALE,
+    SENSOR_PT_O2_CAL_SCALE,
+    SENSOR_PT_O3_CAL_SCALE,
+    SENSOR_PT_O4_CAL_SCALE,
+    SENSOR_PT_F1_CAL_SCALE,
+    SENSOR_PT_F2_CAL_SCALE,
+    SENSOR_PT_F3_CAL_SCALE,
+    SENSOR_PT_F4_CAL_SCALE,
+    SENSOR_PT_C1_CAL_SCALE
+};
+
+static const float s_ptCalibrationBiasMilliVolt[SENSOR_PT_CHANNEL_COUNT] = {
+    SENSOR_PT_O1_CAL_BIAS_MV,
+    SENSOR_PT_O2_CAL_BIAS_MV,
+    SENSOR_PT_O3_CAL_BIAS_MV,
+    SENSOR_PT_O4_CAL_BIAS_MV,
+    SENSOR_PT_F1_CAL_BIAS_MV,
+    SENSOR_PT_F2_CAL_BIAS_MV,
+    SENSOR_PT_F3_CAL_BIAS_MV,
+    SENSOR_PT_F4_CAL_BIAS_MV,
+    SENSOR_PT_C1_CAL_BIAS_MV
+};
 
 static SInt32 Sensor_RoundToSInt32( float value )
 {
@@ -53,6 +96,38 @@ static SInt32 Sensor_ConvertPtMilliVoltToMilliBar( SInt32 millivolt, UInt8 index
 static SInt32 Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt( SInt32 adcMilliVolt )
 {
     return Sensor_RoundToSInt32( (float)adcMilliVolt * SENSOR_PT_FRONTEND_GAIN );
+}
+
+static SInt32 Sensor_ApplyPtVoltageCalibration( SInt32 measuredMilliVolt,
+                                                UInt8 index )
+{
+    float scale;
+    float biasMilliVolt;
+    float correctedMilliVolt;
+
+    if( index >= SENSOR_PT_CHANNEL_COUNT )
+    {
+        return measuredMilliVolt;
+    }
+
+    scale = s_ptCalibrationScale[index];
+    if( scale == 0.0f )
+    {
+        return measuredMilliVolt;
+    }
+
+    biasMilliVolt = s_ptCalibrationBiasMilliVolt[index];
+    correctedMilliVolt = ((float)measuredMilliVolt - biasMilliVolt) / scale;
+    return Sensor_RoundToSInt32( correctedMilliVolt );
+}
+
+static SInt32 Sensor_ConvertPtAdcMilliVoltToCalibratedMilliVolt(
+    SInt32 adcMilliVolt,
+    UInt8 index )
+{
+    return Sensor_ApplyPtVoltageCalibration(
+        Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt( adcMilliVolt ),
+        index );
 }
 
 static SInt32 Sensor_ConvertPtMilliBarToMilliVolt( SInt32 milliBar, UInt8 index )
@@ -226,8 +301,9 @@ void SensorOverride_StartFromCurrent( void )
     for( i = 0U; i < SENSOR_PT_CHANNEL_COUNT; i++ )
     {
         raw = s_ptRawAdc[i];
-        milliVolt = Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
-            Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ) );
+        milliVolt = Sensor_ConvertPtAdcMilliVoltToCalibratedMilliVolt(
+            Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ),
+            i );
         s_overridePtMilliBar[i] = Sensor_ConvertPtMilliVoltToMilliBar( milliVolt, i );
     }
 
@@ -329,9 +405,10 @@ SInt32 Sensor_GetPtAdcMilliVolt( UInt8 ch )
     {
         return Sensor_ConvertPtMilliBarToMilliVolt( s_overridePtMilliBar[idx], idx );
     }
-    return Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
+    return Sensor_ConvertPtAdcMilliVoltToCalibratedMilliVolt(
         Sensor_RoundToSInt32( AFEC_ToVoltage( Sensor_GetPtRawAdc( ch ) ) *
-                              1000.0f ) );
+                              1000.0f ),
+        idx );
 }
 
 SInt32 Sensor_GetPtPressureMilliBar( UInt8 ch )
@@ -368,8 +445,10 @@ void Sensor_GetPtScan( sSensorPtScan *pScan )
         }
         raw = s_ptRawAdc[i];
         pScan->rawAdc[i] = raw;
-        pScan->adcMilliVolt[i] = Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt(
-            Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ) );
+        pScan->adcMilliVolt[i] =
+            Sensor_ConvertPtAdcMilliVoltToCalibratedMilliVolt(
+                Sensor_RoundToSInt32( AFEC_ToVoltage( raw ) * 1000.0f ),
+                i );
         pScan->adcVoltage[i] = (float)pScan->adcMilliVolt[i] / 1000.0f;
         pScan->pressureMilliBar[i] =
             Sensor_ConvertPtMilliVoltToMilliBar( pScan->adcMilliVolt[i], i );

@@ -438,8 +438,6 @@ static sam_csp_dispatch_action_t handle_health(
 {
     csp_rs485_health_t link_health;
     sam_csp_health_snapshot_t snapshot;
-    sOpuDebugMessage debug_message;
-    uint8_t debug_index;
     uint16_t transaction_id = 0U;
     uint8_t detail = 0U;
     sam_csp_status_t status = SamCsp_DecodeHeader(
@@ -466,30 +464,6 @@ static sam_csp_dispatch_action_t handle_health(
     snapshot.current_mode = (uint8_t)StateMachine_GetMode();
     snapshot.link_state = (uint8_t)link_health.state;
     snapshot.last_error = (uint8_t)link_health.last_error;
-    for (debug_index = 0U; debug_index < SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES; debug_index++) {
-        memset(&debug_message, 0, sizeof(debug_message));
-        if (OpuDebug_PopMessage(&debug_message) == 0U) {
-            break;
-        }
-        snapshot.debug_messages[debug_index].sequence = (uint32_t)debug_message.sequence;
-        snapshot.debug_messages[debug_index].elapsed_ms = (uint32_t)debug_message.elapsedMs;
-        snapshot.debug_messages[debug_index].source = (uint8_t)debug_message.source;
-        snapshot.debug_messages[debug_index].event = (uint8_t)debug_message.event;
-        snapshot.debug_messages[debug_index].mode = (uint8_t)debug_message.mode;
-        snapshot.debug_messages[debug_index].reserved = 0U;
-        snapshot.debug_count++;
-    }
-    snapshot.counters[0] = link_health.uart_errors;
-    snapshot.counters[1] = link_health.dma_errors;
-    snapshot.counters[2] = link_health.tx_timeouts;
-    snapshot.counters[3] = link_health.tx_failures;
-    snapshot.counters[4] = link_health.protocol_errors;
-    snapshot.counters[5] = link_health.stream_dropped_bytes;
-    snapshot.counters[6] = link_health.stream_high_watermark;
-    snapshot.counters[7] = link_health.stream_discontinuities;
-    snapshot.counters[8] = link_health.recovery_attempts;
-    snapshot.counters[9] = link_health.recovery_successes;
-    snapshot.counters[10] = link_health.recovery_failures;
     snapshot.thruster_fault_flags = (uint32_t)Opu_GetThrusterFaultFlags();
 
     *response_length = SamCsp_EncodeHealthSnapshot(

@@ -41,8 +41,7 @@
 
 #define SAM_CSP_SENSOR_RESPONSE_LENGTH        126U
 #define SAM_CSP_SOLVALVE_RESPONSE_LENGTH      16U
-#define SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES     4U
-#define SAM_CSP_HEALTH_RESPONSE_LENGTH        110U
+#define SAM_CSP_HEALTH_RESPONSE_LENGTH        17U
 
 #define SAM_CSP_LPV_VALID_MASK                0x0FFFU
 #define SAM_CSP_HEATER_VALID_MASK             0x0FU
@@ -124,22 +123,10 @@ typedef struct {
 } sam_csp_solvalve_snapshot_t;
 
 typedef struct {
-    uint32_t sequence;
-    uint32_t elapsed_ms;
-    uint8_t source;
-    uint8_t event;
-    uint8_t mode;
-    uint8_t reserved;
-} sam_csp_debug_message_t;
-
-typedef struct {
     uint32_t uptime_ms;
     uint8_t current_mode;
     uint8_t link_state;
     uint8_t last_error;
-    uint8_t debug_count;
-    sam_csp_debug_message_t debug_messages[SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES];
-    uint32_t counters[11];
     uint32_t thruster_fault_flags;
 } sam_csp_health_snapshot_t;
 

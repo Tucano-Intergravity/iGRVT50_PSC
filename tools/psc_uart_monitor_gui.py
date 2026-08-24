@@ -122,8 +122,7 @@ TC_LABELS = (
 
 SENSOR_RESPONSE_LENGTH = 126
 SOLVALVE_RESPONSE_LENGTH = 16
-HEALTH_DEBUG_MAX_MESSAGES = 4
-HEALTH_RESPONSE_LENGTH = 110
+HEALTH_RESPONSE_LENGTH = 17
 
 THRUSTER_FAULTS = (
     (0x00000001, "PT-C1_HH"),
@@ -182,22 +181,11 @@ class SolvalvePacket:
 
 
 @dataclass
-class DebugMessage:
-    debug_sequence: int
-    debug_elapsed_ms: int
-    debug_source: int
-    debug_event: int
-    debug_mode: int
-
-
-@dataclass
 class HealthPacket:
     uptime_ms: int
     current_mode: int
     link_state: int
     last_error: int
-    debug_messages: list[DebugMessage]
-    counters: list[int]
     thruster_fault_flags: int
 
 
@@ -326,43 +314,6 @@ def fault_flags_text(flags: int) -> str:
     return "|".join(names)
 
 
-def debug_source_text(source: int) -> str:
-    return {
-        1: "THRUSTER",
-        2: "THRUSTER_CHECK",
-        3: "PAR",
-    }.get(source, f"SRC_{source}")
-
-
-def debug_event_text(source: int, event: int) -> str:
-    if source == 1:
-        return {
-            0: "SV-O3_ON",
-            1: "SV-F3_ON",
-            2: "SP_ON",
-            3: "SV-F3_OFF",
-            4: "SV-O3_OFF",
-            5: "SP_OFF",
-        }.get(event, f"EVENT_{event}")
-    if source == 2:
-        return {
-            0: "PRE_RUN_CHECK",
-            1: "RUN_MONITOR_1HZ",
-            2: "FAULT_PT-C1_HH",
-            3: "FAULT_PT-C1_LL",
-            4: "FAULT_TT-C1_HH",
-            5: "FAULT_PT-C1_INVALID",
-            6: "FAULT_TT-C1_INVALID",
-        }.get(event, f"EVENT_{event}")
-    if source == 3:
-        return {
-            0: "PAR_ROUTINE_1HZ",
-            1: "PAR_START",
-            2: "PAR_STOP",
-        }.get(event, f"EVENT_{event}")
-    return f"EVENT_{event}"
-
-
 def mask_bit(mask: int, bit_index: int) -> int:
     return 1 if (mask & (1 << bit_index)) else 0
 
@@ -464,42 +415,12 @@ def parse_health_response(payload: bytes, transaction_id: int) -> tuple[int, int
     offset += 1
     last_error = payload[offset]
     offset += 1
-    debug_count = payload[offset]
-    offset += 1
-    debug_messages: list[DebugMessage] = []
-    active_debug_count = min(debug_count, HEALTH_DEBUG_MAX_MESSAGES)
-    for slot in range(HEALTH_DEBUG_MAX_MESSAGES):
-        debug_sequence = struct.unpack_from(">I", payload, offset)[0]
-        offset += 4
-        debug_elapsed_ms = struct.unpack_from(">I", payload, offset)[0]
-        offset += 4
-        debug_source = payload[offset]
-        offset += 1
-        debug_event = payload[offset]
-        offset += 1
-        debug_mode = payload[offset]
-        offset += 1
-        offset += 1
-        if slot < active_debug_count:
-            debug_messages.append(
-                DebugMessage(
-                    debug_sequence=debug_sequence,
-                    debug_elapsed_ms=debug_elapsed_ms,
-                    debug_source=debug_source,
-                    debug_event=debug_event,
-                    debug_mode=debug_mode,
-                )
-            )
-    counters = list(struct.unpack_from(">11I", payload, offset))
-    offset += 4 * 11
     thruster_fault_flags = struct.unpack_from(">I", payload, offset)[0]
     return status, detail, HealthPacket(
         uptime_ms=uptime_ms,
         current_mode=current_mode,
         link_state=link_state,
         last_error=last_error,
-        debug_messages=debug_messages,
-        counters=counters,
         thruster_fault_flags=thruster_fault_flags,
     )
 
@@ -1689,32 +1610,11 @@ class PscCspMonitorApp(tk.Tk):
         self.tm_mode_var.set(mode_text(packet.current_mode))
         self.health_var.set(f"L{packet.link_state}/E{packet.last_error}")
         self.fault_var.set(fault_flags_text(packet.thruster_fault_flags))
-        for debug in packet.debug_messages:
-            self._log(
-                f"DEBUG #{debug.debug_sequence} "
-                f"{debug_source_text(debug.debug_source)}."
-                f"{debug_event_text(debug.debug_source, debug.debug_event)} "
-                f"t={debug.debug_elapsed_ms}ms mode={mode_text(debug.debug_mode)}"
-            )
-        counter_names = (
-            "uart",
-            "dma",
-            "tx_to",
-            "tx_fail",
-            "proto",
-            "drop",
-            "hwm",
-            "disc",
-            "rec_try",
-            "rec_ok",
-            "rec_fail",
-        )
-        counters = " ".join(f"{name}={value}" for name, value in zip(counter_names, packet.counters))
         if log_health:
             self._log(
                 f"Health uptime={packet.uptime_ms}ms mode={mode_text(packet.current_mode)} link={packet.link_state} "
                 f"last_error={packet.last_error} fault={fault_flags_text(packet.thruster_fault_flags)}"
-                f"(0x{packet.thruster_fault_flags:08X}) {counters}"
+                f"(0x{packet.thruster_fault_flags:08X})"
             )
 
     def _handle_tx(self, request: TxRequest) -> None:

@@ -425,8 +425,6 @@ size_t SamCsp_EncodeHealthSnapshot(
     size_t capacity)
 {
     size_t offset;
-    size_t i;
-    uint8_t debug_count;
 
     if ((snapshot == NULL) || (output == NULL)
         || (capacity < SAM_CSP_HEALTH_RESPONSE_LENGTH)) {
@@ -447,25 +445,6 @@ size_t SamCsp_EncodeHealthSnapshot(
     output[offset++] = snapshot->current_mode;
     output[offset++] = snapshot->link_state;
     output[offset++] = snapshot->last_error;
-    debug_count = snapshot->debug_count;
-    if (debug_count > SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES) {
-        debug_count = SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES;
-    }
-    output[offset++] = debug_count;
-    for (i = 0U; i < SAM_CSP_HEALTH_DEBUG_MAX_MESSAGES; i++) {
-        put_be32(&output[offset], snapshot->debug_messages[i].sequence);
-        offset += 4U;
-        put_be32(&output[offset], snapshot->debug_messages[i].elapsed_ms);
-        offset += 4U;
-        output[offset++] = snapshot->debug_messages[i].source;
-        output[offset++] = snapshot->debug_messages[i].event;
-        output[offset++] = snapshot->debug_messages[i].mode;
-        output[offset++] = snapshot->debug_messages[i].reserved;
-    }
-    for (i = 0U; i < 11U; i++) {
-        put_be32(&output[offset], snapshot->counters[i]);
-        offset += 4U;
-    }
     put_be32(&output[offset], snapshot->thruster_fault_flags);
     offset += 4U;
     return offset;
