@@ -154,11 +154,15 @@ static sam_csp_dispatch_action_t handle_command(
                 domain_result = SamCspDomain_ApplyLpvOutputs(&decoded);
                 status = domain_status(domain_result, &detail);
                 if (status == SAM_CSP_STATUS_OK) {
-                    return encode_sensor_snapshot_response(
+                    sam_csp_dispatch_action_t action =
+                        encode_sensor_snapshot_response(
                         request,
                         response,
                         response_capacity,
                         response_length);
+                    return (action == SAM_CSP_DISPATCH_RESPOND)
+                        ? SAM_CSP_DISPATCH_RESPOND_BROADCAST
+                        : action;
                 }
             }
             return encode_status_response(
@@ -604,6 +608,7 @@ void SamCspService_Task(void *argument)
             const uint8_t source = (uint8_t)csp_conn_src(conn);
             const uint8_t destination = (uint8_t)csp_conn_dst(conn);
             const uint8_t dport = (uint8_t)csp_conn_dport(conn);
+            const uint8_t sport = (uint8_t)csp_conn_sport(conn);
             size_t response_length = 0U;
             sam_csp_dispatch_action_t action = SamCspService_Dispatch(
                 source,
@@ -623,7 +628,8 @@ void SamCspService_Task(void *argument)
                 packet = NULL;
             }
 
-            if ((action == SAM_CSP_DISPATCH_RESPOND)
+            if (((action == SAM_CSP_DISPATCH_RESPOND)
+                 || (action == SAM_CSP_DISPATCH_RESPOND_BROADCAST))
                 && (response_length > 0U)) {
                 csp_packet_t *reply = csp_buffer_get(response_length);
                 if (reply == NULL) {
@@ -632,9 +638,23 @@ void SamCspService_Task(void *argument)
                 }
                 memcpy(reply->data, response_buffer, response_length);
                 reply->length = (uint16_t)response_length;
-                if (!csp_send(conn, reply, 0U)) {
-                    csp_buffer_free(reply);
-                    s_counters.send_failures++;
+                if (action == SAM_CSP_DISPATCH_RESPOND_BROADCAST) {
+                    if (csp_sendto(
+                            CSP_PRIO_NORM,
+                            CSP_BROADCAST_ADDR,
+                            sport,
+                            dport,
+                            CSP_O_NONE,
+                            reply,
+                            0U) != CSP_ERR_NONE) {
+                        csp_buffer_free(reply);
+                        s_counters.send_failures++;
+                    }
+                } else {
+                    if (!csp_send(conn, reply, 0U)) {
+                        csp_buffer_free(reply);
+                        s_counters.send_failures++;
+                    }
                 }
             }
         }

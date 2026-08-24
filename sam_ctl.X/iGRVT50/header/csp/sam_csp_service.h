@@ -17,6 +17,7 @@ typedef struct {
 typedef enum {
     SAM_CSP_DISPATCH_DROP = 0,
     SAM_CSP_DISPATCH_RESPOND,
+    SAM_CSP_DISPATCH_RESPOND_BROADCAST,
     SAM_CSP_DISPATCH_STANDARD_SERVICE
 } sam_csp_dispatch_action_t;
 

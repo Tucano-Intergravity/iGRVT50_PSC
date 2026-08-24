@@ -37,6 +37,7 @@ AUTO_HEALTH_POLL_MS = 1000
 
 PSC_CSP_ADDRESS = 0x10
 OBC_CSP_ADDRESS = 0x0A
+CSP_BROADCAST_ADDRESS = 0x1F
 CSP_PRIO_NORM = 2
 CSP_SOURCE_PORT_FIRST = 14
 CSP_SOURCE_PORT_LAST = 63
@@ -1549,9 +1550,12 @@ class PscCspMonitorApp(tk.Tk):
 
     def _packet_matches_pending(self, packet: CspPacket, pending: PendingCommand) -> bool:
         csp_id = packet.csp_id
+        destination_matches = csp_id.destination == OBC_CSP_ADDRESS
+        if pending.label == "SET_LPV_OUTPUTS" and csp_id.destination == CSP_BROADCAST_ADDRESS:
+            destination_matches = True
         return (
             csp_id.source == PSC_CSP_ADDRESS
-            and csp_id.destination == OBC_CSP_ADDRESS
+            and destination_matches
             and csp_id.destination_port == pending.source_port
             and csp_id.source_port == pending.port
         )

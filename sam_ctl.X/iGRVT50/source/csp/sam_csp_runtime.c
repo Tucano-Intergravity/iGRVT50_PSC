@@ -112,6 +112,14 @@ int32_t SamCspRuntime_Init(void)
         printf("CSP route failed: %ld\r\n", (long)s_init_code);
         return s_init_code;
     }
+    result = csp_route_set(CSP_BROADCAST_ADDR, iface, CSP_NO_VIA_ADDRESS);
+    if (result != CSP_ERR_NONE) {
+        s_init_code = SAM_CSP_INIT_ERR_ROUTE;
+        csp_rs485_link_deinit();
+        Samv71Rs485Port_ForceReceiveMode();
+        printf("CSP broadcast route failed: %ld\r\n", (long)s_init_code);
+        return s_init_code;
+    }
 
     s_router_task = xTaskCreateStatic(
         router_task,

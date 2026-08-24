@@ -10,7 +10,7 @@ Target reader: OBC CSP/RS485 software implementer
 
 This ICD defines the CSP/RS485 interface between OBC and PSC.
 
-PSC is a CSP responder on RS485. OBC is the bus master and initiates every transaction. PSC transmits only as a response to an OBC request, except the CSP reboot command where no application-level response shall be expected.
+PSC is a CSP responder on RS485. OBC is the bus master and initiates every transaction. PSC transmits only as a response to an OBC request, except the CSP reboot command where no application-level response shall be expected. `SET_LPV_OUTPUTS` success telemetry is request-triggered but broadcast on the CSP bus.
 
 USART1 no longer uses the legacy ASCII `$iGRVT50` protocol.
 
@@ -33,16 +33,17 @@ USART1 no longer uses the legacy ASCII `$iGRVT50` protocol.
 |---|---:|
 | OBC | `0x0A` |
 | PSC | `0x10` |
+| Broadcast | `0x1F` |
 
 | Port | Name | Direction | Description |
 |---:|---|---|---|
 | `1` | `CSP_PING` | OBC -> PSC -> OBC | CSP standard ping echo |
 | `4` | `CSP_REBOOT` | OBC -> PSC | CSP standard reboot |
-| `10` | `COMMAND` | OBC -> PSC -> OBC | PSC telecommands |
+| `10` | `COMMAND` | OBC -> PSC -> OBC/broadcast | PSC telecommands |
 | `11` | `TELEMETRY` | OBC -> PSC -> OBC | PSC telemetry requests |
 | `12` | `DIAGNOSTICS` | OBC -> PSC -> OBC | PSC health request |
 
-OBC shall use source ports in the dynamic range `14..63`. PSC responses use source address `0x10`, destination address `0x0A`, source port equal to the requested destination port, and destination port equal to the OBC request source port.
+OBC shall use source ports in the dynamic range `14..63`. PSC responses use source address `0x10`, destination address `0x0A`, source port equal to the requested destination port, and destination port equal to the OBC request source port. Exception: successful `SET_LPV_OUTPUTS` returns the same Sensor Snapshot payload to destination address `0x1F` while preserving source/destination port mapping.
 
 ## 4. CSP Frame Encoding Over RS485
 
@@ -154,7 +155,7 @@ All status-only responses and all telemetry responses begin with this 6-byte sta
 | TC | Accepted In | Notes |
 |---|---|---|
 | `SET_OUTPUTS` | all modes | LPV/Heater/SP are applied in all modes. HPV bits are applied only in `diagnostic_mode`. |
-| `SET_LPV_OUTPUTS` | all modes | LPV only. |
+| `SET_LPV_OUTPUTS` | all modes | LPV only. Successful response is broadcast to CSP address `0x1F`. |
 | `SET_MODE` | all modes | Requests mode `0..3`. |
 | `THRUSTER_START` | `normal_mode` only | If accepted, PSC enters `run_mode`; after sequence completes, PSC returns to `normal_mode`. |
 | `PAR_START` | `normal_mode` only | PAR routine continues after start until `PAR_STOP`. |
@@ -173,7 +174,7 @@ All status-only responses and all telemetry responses begin with this 6-byte sta
 | Port | `10` |
 | Opcode | `0x01` |
 | Request length | 10 bytes |
-| Success response | Sensor Snapshot TM, 126 bytes |
+| Success response | Broadcast Sensor Snapshot TM, 126 bytes, destination address `0x1F` |
 
 | Offset | Size | Type | Name | Min | Max | Unit/Encoding |
 |---:|---:|---|---|---:|---:|---|
