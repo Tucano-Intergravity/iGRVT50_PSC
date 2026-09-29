@@ -72,6 +72,37 @@ static const float s_ptCalibrationBiasMilliVolt[SENSOR_PT_CHANNEL_COUNT] = {
     SENSOR_PT_C1_CAL_BIAS_MV
 };
 
+/*
+ * PT pressure correction maps nominal pressure to reference pressure:
+ * corrected_bar = nominal_bar * scale + bias_bar.
+ * Coefficients use the supplied 0/15.4/31.4 bar oxidizer and
+ * 0/16.2/31.4 bar fuel checks, constrained so the measured zero point
+ * maps to 0 bar. PT-C1 remains nominal until separate data is available.
+ */
+static const float s_ptPressureCalibrationScale[SENSOR_PT_CHANNEL_COUNT] = {
+    1.1287774122f, /* PT-O1 */
+    1.1374683067f, /* PT-O2 */
+    1.2348094651f, /* PT-O3 */
+    1.1298572263f, /* PT-O4 */
+    1.1337995122f, /* PT-F1 */
+    1.1490606643f, /* PT-F2 */
+    1.0852043319f, /* PT-F3 */
+    1.1037731879f, /* PT-F4 */
+    1.0000000000f  /* PT-C1 */
+};
+
+static const float s_ptPressureCalibrationBiasBar[SENSOR_PT_CHANNEL_COUNT] = {
+    1.9753604713f, /* PT-O1 */
+    2.3318100288f, /* PT-O2 */
+    3.0252831896f, /* PT-O3 */
+    2.8246430657f, /* PT-O4 */
+    2.3526339878f, /* PT-F1 */
+    1.7235909964f, /* PT-F2 */
+    2.6587506132f, /* PT-F3 */
+    2.5662726618f, /* PT-F4 */
+    0.0000000000f  /* PT-C1 */
+};
+
 static SInt32 Sensor_RoundToSInt32( float value )
 {
     return (SInt32)( value + ((value >= 0.0f) ? 0.5f : -0.5f) );
@@ -84,13 +115,33 @@ static float Sensor_GetPtFullScaleBar( UInt8 index )
         : SENSOR_PT_FULL_SCALE_BAR;
 }
 
+static SInt32 Sensor_ApplyPtPressureCalibration( SInt32 nominalMilliBar,
+                                                 UInt8 index )
+{
+    float correctedMilliBar;
+
+    if( index >= SENSOR_PT_CHANNEL_COUNT )
+    {
+        return nominalMilliBar;
+    }
+
+    correctedMilliBar =
+        ((float)nominalMilliBar * s_ptPressureCalibrationScale[index]) +
+        (s_ptPressureCalibrationBiasBar[index] *
+         SENSOR_PT_MILLIBAR_PER_BAR);
+    return Sensor_RoundToSInt32( correctedMilliBar );
+}
+
 static SInt32 Sensor_ConvertPtMilliVoltToMilliBar( SInt32 millivolt, UInt8 index )
 {
     float pressureBar;
+    SInt32 nominalMilliBar;
 
     pressureBar = (((float)millivolt - SENSOR_PT_ZERO_MV) *
         Sensor_GetPtFullScaleBar( index )) / SENSOR_PT_SPAN_MV;
-    return Sensor_RoundToSInt32( pressureBar * SENSOR_PT_MILLIBAR_PER_BAR );
+    nominalMilliBar =
+        Sensor_RoundToSInt32( pressureBar * SENSOR_PT_MILLIBAR_PER_BAR );
+    return Sensor_ApplyPtPressureCalibration( nominalMilliBar, index );
 }
 
 static SInt32 Sensor_ConvertPtAdcMilliVoltToSensorMilliVolt( SInt32 adcMilliVolt )
